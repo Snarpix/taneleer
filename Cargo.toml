@@ -1,0 +1,12 @@
+[package]
+name = "taneleer"
+authors = ["Stanislav Shmarov <github@snarpix.com>"]
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbus = "0.9.5"
+dbus-crossroads = "0.5"
+dbus-tokio = "0.7.5"
+futures = "0.3.21"
+tokio = { version = "1.18.2", features = ["full"] }
