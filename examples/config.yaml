@@ -1,0 +1,11 @@
+frontends:
+  - type: dbus
+    bus: session
+
+backend:
+  type: fs
+  root_path: storage_root
+
+storage:
+  type: sqlite
+  path: storage.db

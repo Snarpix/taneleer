@@ -6,7 +6,11 @@ edition = "2021"
 
 [dependencies]
 dbus = "0.9.5"
-dbus-crossroads = "0.5"
+dbus-crossroads = "0.5.0"
 dbus-tokio = "0.7.5"
 futures = "0.3.21"
 tokio = { version = "1.18.2", features = ["full"] }
+sqlx = { version = "0.5.13", features = ["sqlite", "runtime-tokio-native-tls"] }
+serde = "1.0.137"
+serde_derive = "1.0.137"
+serde_yaml = "0.8.24"
