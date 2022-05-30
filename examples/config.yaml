@@ -2,9 +2,10 @@ frontends:
   - type: dbus
     bus: session
 
-backend:
-  type: fs
-  root_path: storage_root
+backends:
+  fs_test:
+    type: fs
+    root_path: storage_root
 
 storage:
   type: sqlite

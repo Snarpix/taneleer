@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use super::Frontend;
 use crate::artifact::Artifact;
 use crate::class::ArtifactClass;
-use crate::manager::ArtifactManager;
+use crate::manager::SharedArtifactManager;
 
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
@@ -18,8 +18,11 @@ pub struct DBusFrontend {
 }
 
 impl DBusFrontend {
-    pub async fn new(bus: BusType) -> Result<DBusFrontend, Box<dyn std::error::Error>> {
-        let (resource, conn) = connection::new_session_sync()?;
+    pub async fn new(
+        bus: BusType,
+        manager: SharedArtifactManager,
+    ) -> Result<DBusFrontend, Box<dyn std::error::Error>> {
+        let (resource, conn) = connection::new::<SyncConnection>(bus)?;
 
         let handle = tokio::spawn(resource);
 
@@ -30,7 +33,7 @@ impl DBusFrontend {
 
             let token = cr_lock.register(
                 "com.snarpix.taneleer.ArtifactManager",
-                |b: &mut IfaceBuilder<ArtifactManager>| {
+                |b: &mut IfaceBuilder<SharedArtifactManager>| {
                     b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
                         println!("FindArtifactByUuid");
                         Ok(())
@@ -41,7 +44,7 @@ impl DBusFrontend {
             cr_lock.insert(
                 "/com/snarpix/taneleer/ArtifactManager",
                 &[token],
-                ArtifactManager {},
+                manager.clone(),
             );
 
             let token_class = cr_lock.register(
