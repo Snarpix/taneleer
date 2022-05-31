@@ -1,20 +1,21 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use dbus::channel::{BusType, MatchingReceiver};
 use dbus::message::MatchRule;
 use dbus::nonblock::SyncConnection;
+use dbus::MethodErr;
 use dbus_crossroads::{Crossroads, IfaceBuilder};
 use dbus_tokio::connection::{self, IOResourceError};
 use tokio::task::JoinHandle;
 
 use super::Frontend;
 use crate::artifact::Artifact;
-use crate::class::ArtifactClass;
+use crate::class::{ArtifactClassData, ArtifactType};
 use crate::manager::SharedArtifactManager;
 
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
-    conn: Arc<SyncConnection>,
+    _conn: Arc<SyncConnection>,
 }
 
 impl DBusFrontend {
@@ -26,86 +27,119 @@ impl DBusFrontend {
 
         let handle = tokio::spawn(resource);
 
-        let cr = Arc::new(Mutex::new(Crossroads::new()));
+        let mut cr = Crossroads::new();
+        cr.set_async_support(Some((
+            conn.clone(),
+            Box::new(|x| {
+                tokio::spawn(x);
+            }),
+        )));
 
-        {
-            let mut cr_lock = cr.lock().unwrap();
-
-            let token = cr_lock.register(
-                "com.snarpix.taneleer.ArtifactManager",
-                |b: &mut IfaceBuilder<SharedArtifactManager>| {
-                    b.method(
-                        "CreateArtifactClass",
-                        ("name", "backend", "type"),
-                        (),
-                        move |_, obj, (name, backend, art_type): (String, String, String)| {
-                            println!("CreateArtifactClass");
-                            if let Err(_) = obj.lock().unwrap().create_class(name, backend) {
-                                return Err((
-                                    "com.snarpix.taneleer.Error.Unknown",
-                                    "Unknown error",
-                                )
-                                    .into());
+        let token = cr.register(
+            "com.snarpix.taneleer.ArtifactManager",
+            |b: &mut IfaceBuilder<SharedArtifactManager>| {
+                b.method_with_cr_async(
+                    "CreateArtifactClass",
+                    ("name", "backend", "type"),
+                    (),
+                    move |mut ctx, cr, (name, backend_name, art_type): (String, String, String)| {
+                        let obj = cr
+                            .data_mut::<SharedArtifactManager>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        println!("CreateArtifactClass");
+                        async move {
+                            let res: Result<(), MethodErr> = async move {
+                                let obj = obj?;
+                                let art_type =
+                                    art_type.parse::<ArtifactType>().map_err(|_| -> MethodErr {
+                                        (
+                                            "com.snarpix.taneleer.Error.InvalidArtifactType",
+                                            "Invalid artifact type",
+                                        )
+                                            .into()
+                                    })?;
+                                if obj
+                                    .lock()
+                                    .await
+                                    .create_class(
+                                        name,
+                                        ArtifactClassData {
+                                            backend_name,
+                                            art_type,
+                                        },
+                                    )
+                                    .await
+                                    .is_err()
+                                {
+                                    return Err((
+                                        "com.snarpix.taneleer.sError.Unknown",
+                                        "Unknown error",
+                                    )
+                                        .into());
+                                }
+                                Ok(())
                             }
-                            Ok(())
-                        },
-                    );
-                    b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
-                        println!("FindArtifactByUuid");
-                        Ok(())
-                    });
-                },
-            );
+                            .await;
+                            ctx.reply(res)
+                        }
+                    },
+                );
+                b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
+                    println!("FindArtifactByUuid");
+                    Ok(())
+                });
+            },
+        );
 
-            cr_lock.insert(
-                "/com/snarpix/taneleer/ArtifactManager",
-                &[token],
-                manager.clone(),
-            );
+        cr.insert(
+            "/com/snarpix/taneleer/ArtifactManager",
+            &[token],
+            manager.clone(),
+        );
 
-            let token_class = cr_lock.register(
-                "com.snarpix.taneleer.ArtifactClass",
-                |b: &mut IfaceBuilder<ArtifactClass>| {
-                    b.method("Reserve", (), (), move |_, _obj, _: ()| {
-                        println!("Reserve");
-                        Ok(())
-                    });
-                    b.method("Abort", (), (), move |_, _obj, _: ()| {
-                        println!("Abort");
-                        Ok(())
-                    });
-                },
-            );
+        let token_class = cr.register(
+            "com.snarpix.taneleer.ArtifactClass",
+            |b: &mut IfaceBuilder<()>| {
+                b.method("Reserve", (), (), move |_, _obj, _: ()| {
+                    println!("Reserve");
+                    Ok(())
+                });
+                b.method("Abort", (), (), move |_, _obj, _: ()| {
+                    println!("Abort");
+                    Ok(())
+                });
+            },
+        );
 
-            cr_lock.insert(
-                "/com/snarpix/taneleer/Artifacts/test_class",
-                &[token_class],
-                ArtifactClass {},
-            );
-            let token_artifact = cr_lock.register(
-                "com.snarpix.taneleer.Artifact",
-                |b: &mut IfaceBuilder<Artifact>| {
-                    b.method("Commit", (), (), move |_, _obj, _: ()| {
-                        println!("Commit");
-                        Ok(())
-                    });
-                    b.method("Acquire", (), (), move |_, _obj, _: ()| {
-                        println!("Acquire");
-                        Ok(())
-                    });
-                    b.method("Release", (), (), move |_, _obj, _: ()| {
-                        println!("Release");
-                        Ok(())
-                    });
-                },
-            );
+        cr.insert(
+            "/com/snarpix/taneleer/Artifacts/test_class",
+            &[token_class],
+            (),
+        );
+        let token_artifact = cr.register(
+            "com.snarpix.taneleer.Artifact",
+            |b: &mut IfaceBuilder<Artifact>| {
+                b.method("Commit", (), (), move |_, _obj, _: ()| {
+                    println!("Commit");
+                    Ok(())
+                });
+                b.method("Acquire", (), (), move |_, _obj, _: ()| {
+                    println!("Acquire");
+                    Ok(())
+                });
+                b.method("Release", (), (), move |_, _obj, _: ()| {
+                    println!("Release");
+                    Ok(())
+                });
+            },
+        );
 
-            cr_lock.insert(
-                "/com/snarpix/taneleer/Artifacts/test_class/1",
-                &[token_artifact],
-                Artifact {},
-            )
-        }
+        cr.insert(
+            "/com/snarpix/taneleer/Artifacts/test_class/1",
+            &[token_artifact],
+            Artifact {},
+        );
 
         conn.request_name("com.snarpix.taneleer", false, true, false)
             .await?;
@@ -113,17 +147,21 @@ impl DBusFrontend {
         conn.start_receive(
             MatchRule::new_method_call(),
             Box::new(move |msg, conn| {
-                let mut cr_lock = cr.lock().unwrap();
-                cr_lock.handle_message(msg, conn).unwrap();
+                cr.handle_message(msg, conn).unwrap();
                 true
             }),
         );
-        Ok(DBusFrontend { handle, conn })
-    }
-
-    pub fn close(self) {
-        self.handle.abort();
+        Ok(DBusFrontend {
+            handle,
+            _conn: conn,
+        })
     }
 }
 
 impl Frontend for DBusFrontend {}
+
+impl Drop for DBusFrontend {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}

@@ -1,6 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use crate::backends::Backends;
+use crate::class::ArtifactClassData;
 use crate::storage::Storage;
 
 pub type SharedArtifactManager = Arc<Mutex<ArtifactManager>>;
@@ -28,15 +31,17 @@ impl ArtifactManager {
         ArtifactManager { storage, backends }
     }
 
-    pub fn create_class(
+    pub async fn create_class(
         &mut self,
         name: String,
-        backend_name: String,
+        data: ArtifactClassData,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let backend = self
             .backends
-            .get(&backend_name)
+            .get_mut(&data.backend_name)
             .ok_or(ManagerError::BackendNotExists)?;
+        self.storage.create_class(&name, &data).await?;
+        backend.create_class(&name, &data).await?;
         Ok(())
     }
 }

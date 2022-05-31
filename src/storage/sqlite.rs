@@ -1,6 +1,8 @@
+use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 use super::Storage;
+use crate::class::ArtifactClassData;
 
 #[derive(Debug)]
 pub enum SqliteError {
@@ -77,7 +79,10 @@ DROP TABLE IF EXISTS artifact_classes;
             r#"
 CREATE TABLE artifact_classes(
     id INTEGER PRIMARY KEY,
-    name TEXT
+    name TEXT NOT NULL UNIQUE,
+    backend TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    state INTEGER NOT NULL
 );
         "#,
         )
@@ -88,4 +93,21 @@ CREATE TABLE artifact_classes(
     }
 }
 
-impl Storage for SqliteStorage {}
+#[async_trait]
+impl Storage for SqliteStorage {
+    async fn create_class(
+        &mut self,
+        name: &str,
+        data: &ArtifactClassData,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        sqlx::query(
+            r#"INSERT INTO artifact_classes(name, backend, artifact_type) VALUES (?1, ?2, ?3);"#,
+        )
+        .bind(name)
+        .bind(&data.backend_name)
+        .bind(data.art_type.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}

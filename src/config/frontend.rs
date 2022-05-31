@@ -7,9 +7,9 @@ pub enum BusType {
     Session,
 }
 
-impl Into<dbus::channel::BusType> for &BusType {
-    fn into(self) -> dbus::channel::BusType {
-        match self {
+impl From<&BusType> for dbus::channel::BusType {
+    fn from(bus: &BusType) -> Self {
+        match bus {
             BusType::System => dbus::channel::BusType::System,
             BusType::Session => dbus::channel::BusType::Session,
         }

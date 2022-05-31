@@ -2,15 +2,27 @@ mod fs;
 
 use std::collections::HashMap;
 
-use crate::config::backend::{ConfigBackend, ConfigFsBackend};
+use async_trait::async_trait;
 
-pub trait Backend {}
+use crate::{
+    class::ArtifactClassData,
+    config::backend::{ConfigBackend, ConfigFsBackend},
+};
 
-pub type Backends = HashMap<String, Box<dyn Backend + Send>>;
+#[async_trait]
+pub trait Backend {
+    async fn create_class(
+        &mut self,
+        name: &str,
+        data: &ArtifactClassData,
+    ) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+pub type Backends = HashMap<String, Box<dyn Backend + Send + Sync>>;
 
 pub async fn from_config(
     config: &ConfigBackend,
-) -> Result<Box<dyn Backend + Send>, Box<dyn std::error::Error>> {
+) -> Result<Box<dyn Backend + Send + Sync>, Box<dyn std::error::Error>> {
     match config {
         ConfigBackend::Fs(ConfigFsBackend { root_path }) => {
             Ok(Box::new(fs::FsBackend::new(root_path).await?))

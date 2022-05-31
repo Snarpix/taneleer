@@ -6,7 +6,9 @@ mod frontends;
 mod manager;
 mod storage;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use backends::Backends;
 use config::Config;
@@ -33,5 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tokio::signal::ctrl_c().await?;
+
+    drop(frontends);
     Ok(())
 }
