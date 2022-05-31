@@ -34,6 +34,22 @@ impl DBusFrontend {
             let token = cr_lock.register(
                 "com.snarpix.taneleer.ArtifactManager",
                 |b: &mut IfaceBuilder<SharedArtifactManager>| {
+                    b.method(
+                        "CreateArtifactClass",
+                        ("name", "backend", "type"),
+                        (),
+                        move |_, obj, (name, backend, art_type): (String, String, String)| {
+                            println!("CreateArtifactClass");
+                            if let Err(_) = obj.lock().unwrap().create_class(name, backend) {
+                                return Err((
+                                    "com.snarpix.taneleer.Error.Unknown",
+                                    "Unknown error",
+                                )
+                                    .into());
+                            }
+                            Ok(())
+                        },
+                    );
                     b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
                         println!("FindArtifactByUuid");
                         Ok(())
