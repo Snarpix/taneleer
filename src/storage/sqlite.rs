@@ -3,10 +3,12 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
 use super::Storage;
 use crate::class::ArtifactClassData;
+use crate::error::Result;
 
 #[derive(Debug)]
 pub enum SqliteError {
     InvalidVersion,
+    NotFound,
 }
 
 impl std::fmt::Display for SqliteError {
@@ -24,9 +26,7 @@ pub struct SqliteStorage {
 const CURRENT_DB_VERSION: u32 = 1;
 
 impl SqliteStorage {
-    pub async fn new(
-        path: &std::path::PathBuf,
-    ) -> Result<SqliteStorage, Box<dyn std::error::Error>> {
+    pub async fn new(path: &std::path::PathBuf) -> Result<SqliteStorage> {
         let conn_opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true);
@@ -52,21 +52,21 @@ impl SqliteStorage {
         Ok(res)
     }
 
-    async fn get_db_version(&self) -> Result<u32, Box<dyn std::error::Error>> {
+    async fn get_db_version(&self) -> Result<u32> {
         let res = sqlx::query_as::<_, (u32,)>("PRAGMA user_version;")
             .fetch_one(&self.pool)
             .await?;
         Ok(res.0)
     }
 
-    async fn update_db_version(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn update_db_version(&self) -> Result<()> {
         sqlx::query(&format!("PRAGMA user_version = {};", CURRENT_DB_VERSION))
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    async fn migrate_0(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn migrate_0(&self) -> Result<()> {
         sqlx::query(
             r#"
 DROP TABLE IF EXISTS artifact_classes;
@@ -82,7 +82,7 @@ CREATE TABLE artifact_classes(
     name TEXT NOT NULL UNIQUE,
     backend TEXT NOT NULL,
     artifact_type TEXT NOT NULL,
-    state INTEGER NOT NULL
+    state INTEGER NOT NULL DEFAULT 0
 );
         "#,
         )
@@ -95,11 +95,7 @@ CREATE TABLE artifact_classes(
 
 #[async_trait]
 impl Storage for SqliteStorage {
-    async fn create_class(
-        &mut self,
-        name: &str,
-        data: &ArtifactClassData,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn create_uninit_class(&mut self, name: &str, data: &ArtifactClassData) -> Result<()> {
         sqlx::query(
             r#"INSERT INTO artifact_classes(name, backend, artifact_type) VALUES (?1, ?2, ?3);"#,
         )
@@ -109,5 +105,36 @@ impl Storage for SqliteStorage {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn mark_class_init(&mut self, name: &str) -> Result<()> {
+        let rows = sqlx::query(r#"UPDATE artifact_classes SET state = 1 WHERE name = ?1;"#)
+            .bind(name)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+        Ok(())
+    }
+
+    async fn remove_uninit_class(&mut self, name: &str) -> Result<()> {
+        let rows = sqlx::query(r#"DELETE FROM artifact_classes WHERE name = ?1 AND state = 0;"#)
+            .bind(name)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+        Ok(())
+    }
+
+    async fn get_classes(&self) -> Result<Vec<String>> {
+        sqlx::query_scalar::<_, String>(r#"SELECT name FROM artifact_classes;"#)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| e.into())
     }
 }

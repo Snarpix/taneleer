@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use serde_derive::Deserialize;
 
+use crate::error::Result;
 use backend::ConfigBackend;
 use frontend::ConfigFrontend;
 use storage::ConfigStorage;
@@ -19,7 +20,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn parse(path: &std::path::Path) -> Result<Config, Box<dyn std::error::Error>> {
+    pub fn parse(path: &std::path::Path) -> Result<Config> {
         let file = std::fs::OpenOptions::new().read(true).open(path)?;
         Ok(serde_yaml::from_reader::<_, Config>(file)?)
     }

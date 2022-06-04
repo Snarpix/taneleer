@@ -1,5 +1,6 @@
 frontends:
   - type: dbus
+    dbus_name: com.snarpix.taneleer
     bus: session
 
 backends:

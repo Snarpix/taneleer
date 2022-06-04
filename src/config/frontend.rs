@@ -18,6 +18,7 @@ impl From<&BusType> for dbus::channel::BusType {
 
 #[derive(Deserialize)]
 pub struct ConfigDBusFrontend {
+    pub dbus_name: String,
     pub bus: BusType,
 }
 

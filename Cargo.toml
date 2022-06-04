@@ -9,8 +9,9 @@ dbus = "0.9.5"
 dbus-crossroads = "0.5.0"
 dbus-tokio = "0.7.5"
 futures = "0.3.21"
-async-trait = "0.1.53"
-tokio = { version = "1.18.2", features = ["full"] }
+async-trait = "0.1.56"
+tokio = { version = "1.19.0", features = ["full"] }
+tokio-stream = { version = "0.1.8", features = ["sync"] }
 sqlx = { version = "0.5.13", features = ["sqlite", "runtime-tokio-native-tls"] }
 serde = "1.0.137"
 serde_with = "1.14.0"

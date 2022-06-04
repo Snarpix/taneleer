@@ -2,6 +2,7 @@ mod artifact;
 mod backends;
 mod class;
 mod config;
+mod error;
 mod frontends;
 mod manager;
 mod storage;
@@ -12,10 +13,11 @@ use tokio::sync::Mutex;
 
 use backends::Backends;
 use config::Config;
+use error::Result;
 use manager::ArtifactManager;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let config = Config::parse(std::path::Path::new("examples/config.yaml"))?;
     let storage = storage::from_config(&config.storage).await?;
 
