@@ -3,10 +3,12 @@ use std::sync::Arc;
 use tokio::sync::broadcast::{self, Receiver as BReceiver, Sender as BSender};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::BroadcastStream;
+use uuid::Uuid;
 
 use crate::backends::Backends;
 use crate::class::ArtifactClassData;
 use crate::error::Result;
+use crate::source::Source;
 use crate::storage::Storage;
 
 pub type SharedArtifactManager = Arc<Mutex<ArtifactManager>>;
@@ -63,7 +65,7 @@ impl ArtifactManager {
                 return Err(e);
             }
         }
-        self.storage.mark_class_init(&name).await?;
+        self.storage.commit_class_init(&name).await?;
         self.message_broadcast
             .send(ManagerMessage::NewClass(name))
             .unwrap();
@@ -72,5 +74,36 @@ impl ArtifactManager {
 
     pub async fn get_clases(&self) -> Result<Vec<String>> {
         self.storage.get_classes().await
+    }
+
+    pub async fn reserve_artifact(
+        &mut self,
+        class_name: String,
+        sources: Vec<(String, Source)>,
+    ) -> Result<(String, String)> {
+        let artifact_uuid = Uuid::new_v4();
+        let (backend_name, artifact_type) = self
+            .storage
+            .reserve_artifact(artifact_uuid, &class_name, &sources)
+            .await?;
+        let res = async {
+            let backend = self
+                .backends
+                .get_mut(&backend_name)
+                .ok_or(ManagerError::BackendNotExists)?;
+            backend
+                .reserve_artifact(&class_name, artifact_type, artifact_uuid)
+                .await
+        }
+        .await;
+        match res {
+            Ok(url) => Ok((artifact_uuid.to_string(), url)),
+            Err(e) => {
+                self.storage
+                    .rollback_artifact_reserve(artifact_uuid)
+                    .await?;
+                Err(e)
+            }
+        }
     }
 }

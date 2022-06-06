@@ -1,9 +1,10 @@
 use std::os::unix::fs::PermissionsExt;
 
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use super::Backend;
-use crate::class::ArtifactClassData;
+use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 
 pub struct FsBackend {
@@ -28,6 +29,7 @@ impl FsBackend {
 #[derive(Debug)]
 pub enum FsError {
     RootIsNotDir,
+    PathNotUtf8,
 }
 
 impl std::fmt::Display for FsError {
@@ -44,5 +46,28 @@ impl Backend for FsBackend {
         let mut dir_path = self.root_path.clone();
         dir_path.push(name);
         tokio::fs::create_dir(dir_path).await.map_err(|e| e.into())
+    }
+
+    async fn reserve_artifact(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<String> {
+        let uuid_str = uuid.to_string();
+        let mut dir_path = self.root_path.clone();
+        dir_path.push(class_name);
+        dir_path.push(uuid_str);
+        tokio::fs::create_dir(&dir_path).await?;
+        match art_type {
+            ArtifactType::File => {
+                dir_path.push("artifact");
+                tokio::fs::File::create(&dir_path).await?;
+                dir_path
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| FsError::PathNotUtf8.into())
+            }
+        }
     }
 }

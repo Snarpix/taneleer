@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use dbus::arg::Append;
+use dbus::arg::{Append, RefArg, Variant};
 use dbus::channel::{BusType, MatchingReceiver};
 use dbus::message::MatchRule;
 use dbus::nonblock::SyncConnection;
@@ -11,18 +12,20 @@ use dbus_tokio::connection::{self, IOResourceError};
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use uuid::Uuid;
 
 use super::Frontend;
-use crate::artifact::Artifact;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::manager::{ArtifactManager, ManagerMessage, SharedArtifactManager};
+use crate::source::{Hashsum, Sha1, Sha256, Source};
 
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
     _conn: Arc<SyncConnection>,
 }
 
+#[derive(Clone)]
 struct ArtifactClass {
     name: String,
     manager: SharedArtifactManager,
@@ -170,14 +173,100 @@ impl DBusFrontend {
         cr.register(
             "com.snarpix.taneleer.ArtifactClass",
             |b: &mut IfaceBuilder<ArtifactClass>| {
-                b.method("Reserve", (), (), move |_, _obj, _: ()| {
-                    println!("Reserve");
-                    Ok(())
-                });
-                b.method("Abort", (), (), move |_, _obj, _: ()| {
-                    println!("Abort");
-                    Ok(())
-                });
+                b.method_with_cr_async(
+                    "Reserve",
+                    ("sources",),
+                    ("uuid", "url"),
+                    move |mut ctx,
+                          cr,
+                          (sources,): (
+                        HashMap<String, (String, Variant<Box<dyn RefArg>>,)>,
+                    )| {
+                        let obj = cr
+                            .data_mut::<ArtifactClass>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        async move {
+                            let res = async move {
+                                let ArtifactClass{name, manager} = obj?;
+                                let mut sources_conv = Vec::new();
+                                for (source_name, (source_type, source_meta)) in sources {
+                                    let meta = match source_type.as_str() {
+                                        "url" => {
+                                            let mut arg_iter = source_meta.0.as_iter()
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            let url = arg_iter.next().and_then(|i| i.as_str())
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            let hash = arg_iter.next().and_then(|i| i.as_str())
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            if !arg_iter.next().is_none() {
+                                                return Err(MethodErr::invalid_arg(&source_meta));
+                                            }
+                                            let mut sha256_hash: Sha256 = Default::default();
+                                            hex::decode_to_slice(hash, &mut sha256_hash)
+                                                .map_err(|_| MethodErr::invalid_arg(&hash))?;
+                                            Source::Url { url: url.to_owned(), hash: Hashsum::Sha256(sha256_hash) }
+                                        },
+                                        "git" => {
+                                            let mut arg_iter = source_meta.0.as_iter()
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            let repo = arg_iter.next().and_then(|i| i.as_str())
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            let commit = arg_iter.next().and_then(|i| i.as_str())
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            if !arg_iter.next().is_none() {
+                                                return Err(MethodErr::invalid_arg(&source_meta));
+                                            }
+                                            let mut sha1_hash: Sha1 = Default::default();
+                                            hex::decode_to_slice(commit, &mut sha1_hash)
+                                                .map_err(|_| MethodErr::invalid_arg(&commit))?;
+                                            Source::Git { repo: repo.to_owned(), commit: sha1_hash }
+                                        },
+                                        "artifact" => {
+                                            let mut arg_iter = source_meta.0.as_iter()
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            let uuid = arg_iter.next().and_then(|i| i.as_str())
+                                                .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                                            if !arg_iter.next().is_none() {
+                                                return Err(MethodErr::invalid_arg(&source_meta));
+                                            }
+                                            let uuid = Uuid::parse_str(uuid)
+                                                .map_err(|_| MethodErr::invalid_arg(&uuid))?;
+                                            Source::Artifact { uuid }
+                                        },
+                                        _ => {
+                                            return Err(MethodErr::invalid_arg(&source_type));
+                                        },
+                                    };
+                                    sources_conv.push((source_name, meta));
+                                }
+                                let mut manager = manager.lock().await;
+                                if let Ok((uuid, url)) = manager.reserve_artifact(name, sources_conv).await
+                                {
+                                    Ok((uuid, url))
+                                }
+                                else
+                                {
+                                    Err((
+                                        "com.snarpix.taneleer.Error.Unknown",
+                                        "Unknown error",
+                                    )
+                                        .into())
+                                }
+                            }.await;
+                            ctx.reply(res)
+                        }
+                    },
+                );
+                b.method_with_cr_async(
+                    "Abort",
+                    ("uuid",),
+                    (),
+                    move |mut ctx, cr, (uuid,): (String,)| async move {
+                        println!("Abort");
+                        ctx.reply(Ok(()))
+                    },
+                );
             },
         )
     }

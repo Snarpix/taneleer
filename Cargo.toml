@@ -10,10 +10,12 @@ dbus-crossroads = "0.5.0"
 dbus-tokio = "0.7.5"
 futures = "0.3.21"
 async-trait = "0.1.56"
-tokio = { version = "1.19.0", features = ["full"] }
-tokio-stream = { version = "0.1.8", features = ["sync"] }
+tokio = { version = "1.19.1", features = ["full"] }
+tokio-stream = { version = "0.1.9", features = ["sync"] }
 sqlx = { version = "0.5.13", features = ["sqlite", "runtime-tokio-native-tls"] }
 serde = "1.0.137"
 serde_with = "1.14.0"
 serde_derive = "1.0.137"
 serde_yaml = "0.8.24"
+uuid = { version = "1.1.1", features = ["v4", "fast-rng"] }
+hex = "0.4.3"

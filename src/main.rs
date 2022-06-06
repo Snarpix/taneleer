@@ -5,6 +5,7 @@ mod config;
 mod error;
 mod frontends;
 mod manager;
+mod source;
 mod storage;
 
 use std::sync::Arc;
