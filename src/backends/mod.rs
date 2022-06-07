@@ -3,6 +3,7 @@ mod fs;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use url::Url;
 use uuid::Uuid;
 
 use crate::{
@@ -22,7 +23,7 @@ pub trait Backend {
         class_name: &str,
         art_type: ArtifactType,
         uuid: Uuid,
-    ) -> Result<String>;
+    ) -> Result<Url>;
 }
 
 pub type Backends = HashMap<String, Box<dyn Backend + Send + Sync>>;

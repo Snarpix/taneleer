@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use log::trace;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
@@ -215,8 +216,9 @@ impl Storage for SqliteStorage {
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
-        sources: &Vec<(String, Source)>,
+        sources: &[(String, Source)],
     ) -> Result<(String, ArtifactType)> {
+        trace!("Sqlite reserve_artifact");
         let mut t = self.pool.begin().await?;
         let (artifact_class_id, backend_name, artifact_type): (i64, String, String) = sqlx::query_as(
             r#"SELECT id, backend, artifact_type FROM artifact_classes WHERE name = ?1 AND state = 1;"#,
@@ -224,9 +226,12 @@ impl Storage for SqliteStorage {
         .bind(class_name)
         .fetch_one(&mut t)
         .await?;
+        trace!("get artifact_type");
         let artifact_type: ArtifactType = artifact_type
             .parse()
             .map_err(|_| SqliteError::InvalidArtifactType)?;
+
+        trace!("insert");
 
         sqlx::query(
             r#"INSERT INTO artifacts(uuid, class_id, reserve_time) VALUES (?1, ?2, UNIXEPOCH());"#,
@@ -237,6 +242,7 @@ impl Storage for SqliteStorage {
         .await?;
 
         for (source_name, source_meta) in sources {
+            trace!("source: {}", source_name);
             match source_meta {
                 Source::Artifact { uuid } => {
                     sqlx::query(

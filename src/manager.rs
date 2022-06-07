@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use tokio::sync::broadcast::{self, Receiver as BReceiver, Sender as BSender};
+use tokio::sync::broadcast::{self, Sender as BSender};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::BroadcastStream;
+use url::Url;
 use uuid::Uuid;
 
 use crate::backends::Backends;
@@ -80,7 +81,7 @@ impl ArtifactManager {
         &mut self,
         class_name: String,
         sources: Vec<(String, Source)>,
-    ) -> Result<(String, String)> {
+    ) -> Result<(Uuid, Url)> {
         let artifact_uuid = Uuid::new_v4();
         let (backend_name, artifact_type) = self
             .storage
@@ -97,7 +98,7 @@ impl ArtifactManager {
         }
         .await;
         match res {
-            Ok(url) => Ok((artifact_uuid.to_string(), url)),
+            Ok(url) => Ok((artifact_uuid, url)),
             Err(e) => {
                 self.storage
                     .rollback_artifact_reserve(artifact_uuid)

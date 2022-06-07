@@ -19,6 +19,8 @@ use manager::ArtifactManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
+
     let config = Config::parse(std::path::Path::new("examples/config.yaml"))?;
     let storage = storage::from_config(&config.storage).await?;
 

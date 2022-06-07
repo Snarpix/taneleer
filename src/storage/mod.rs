@@ -29,7 +29,7 @@ pub trait Storage {
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
-        sources: &Vec<(String, Source)>,
+        sources: &[(String, Source)],
     ) -> Result<(String, ArtifactType)>;
 
     #[must_use]

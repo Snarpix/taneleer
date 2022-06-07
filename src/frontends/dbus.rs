@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use dbus::arg::{Append, RefArg, Variant};
+use dbus::arg::{RefArg, Variant};
 use dbus::channel::{BusType, MatchingReceiver};
 use dbus::message::MatchRule;
 use dbus::nonblock::SyncConnection;
@@ -10,6 +10,7 @@ use dbus::MethodErr;
 use dbus_crossroads::{Crossroads, IfaceBuilder, IfaceToken};
 use dbus_tokio::connection::{self, IOResourceError};
 use futures::StreamExt;
+use log::error;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -43,7 +44,6 @@ impl DBusFrontend {
 
         let cr = Arc::new(StdMutex::new(Crossroads::new()));
         let cr_clone = cr.clone();
-        let manager_clone = manager.clone();
         let class_iface_token;
         {
             let mut cr_lock = cr.lock().unwrap();
@@ -67,7 +67,6 @@ impl DBusFrontend {
             let subscription = manager.lock().await.subscribe().for_each({
                 let cr = cr_clone.clone();
                 let manager = manager.clone();
-                let class_iface_token = class_iface_token.clone();
                 move |m| {
                     let m = m.unwrap();
                     match m {
@@ -199,7 +198,7 @@ impl DBusFrontend {
                                                 .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
                                             let hash = arg_iter.next().and_then(|i| i.as_str())
                                                 .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                                            if !arg_iter.next().is_none() {
+                                            if arg_iter.next().is_some() {
                                                 return Err(MethodErr::invalid_arg(&source_meta));
                                             }
                                             let mut sha256_hash: Sha256 = Default::default();
@@ -214,7 +213,7 @@ impl DBusFrontend {
                                                 .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
                                             let commit = arg_iter.next().and_then(|i| i.as_str())
                                                 .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                                            if !arg_iter.next().is_none() {
+                                            if arg_iter.next().is_some() {
                                                 return Err(MethodErr::invalid_arg(&source_meta));
                                             }
                                             let mut sha1_hash: Sha1 = Default::default();
@@ -227,7 +226,7 @@ impl DBusFrontend {
                                                 .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
                                             let uuid = arg_iter.next().and_then(|i| i.as_str())
                                                 .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                                            if !arg_iter.next().is_none() {
+                                            if arg_iter.next().is_some() {
                                                 return Err(MethodErr::invalid_arg(&source_meta));
                                             }
                                             let uuid = Uuid::parse_str(uuid)
@@ -241,17 +240,18 @@ impl DBusFrontend {
                                     sources_conv.push((source_name, meta));
                                 }
                                 let mut manager = manager.lock().await;
-                                if let Ok((uuid, url)) = manager.reserve_artifact(name, sources_conv).await
-                                {
-                                    Ok((uuid, url))
-                                }
-                                else
-                                {
-                                    Err((
-                                        "com.snarpix.taneleer.Error.Unknown",
-                                        "Unknown error",
-                                    )
-                                        .into())
+                                match manager.reserve_artifact(name, sources_conv).await {
+                                    Ok((uuid, url)) => {
+                                        Ok((uuid.to_string(), url.to_string()))
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to reserve artifact: {:?}", e);
+                                        Err((
+                                            "com.snarpix.taneleer.Error.Unknown",
+                                            "Unknown error",
+                                        )
+                                            .into())
+                                    }
                                 }
                             }.await;
                             ctx.reply(res)
@@ -262,7 +262,7 @@ impl DBusFrontend {
                     "Abort",
                     ("uuid",),
                     (),
-                    move |mut ctx, cr, (uuid,): (String,)| async move {
+                    move |mut ctx, _cr, (_uuid,): (String,)| async move {
                         println!("Abort");
                         ctx.reply(Ok(()))
                     },
@@ -282,7 +282,7 @@ impl DBusFrontend {
             &[*token],
             ArtifactClass {
                 name: class_name,
-                manager: manager,
+                manager,
             },
         );
     }
