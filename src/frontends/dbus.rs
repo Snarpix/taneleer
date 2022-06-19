@@ -10,7 +10,7 @@ use dbus::MethodErr;
 use dbus_crossroads::{Crossroads, IfaceBuilder, IfaceToken};
 use dbus_tokio::connection::{self, IOResourceError};
 use futures::StreamExt;
-use log::error;
+use log::{error, trace};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -32,6 +32,13 @@ struct ArtifactClass {
     manager: SharedArtifactManager,
 }
 
+#[derive(Clone)]
+struct Artifact {
+    uuid: Uuid,
+    class_name: String,
+    manager: SharedArtifactManager,
+}
+
 impl DBusFrontend {
     pub async fn new(
         dbus_name: &str,
@@ -45,6 +52,7 @@ impl DBusFrontend {
         let cr = Arc::new(StdMutex::new(Crossroads::new()));
         let cr_clone = cr.clone();
         let class_iface_token;
+        let artifact_reserve_iface_token;
         {
             let mut cr_lock = cr.lock().unwrap();
 
@@ -63,8 +71,15 @@ impl DBusFrontend {
             );
 
             class_iface_token = Self::register_class_iface(&mut cr_lock);
-
-            let subscription = manager.lock().await.subscribe().for_each({
+            artifact_reserve_iface_token = Self::register_artifact_reserve_iface(&mut cr_lock);
+            let event_stream = {
+                let manager = manager.lock().await;
+                let new_events = manager.subscribe();
+                let old_events =
+                    futures::stream::iter(manager.get_init_stream().await.unwrap()).map(Ok);
+                old_events.chain(new_events)
+            };
+            let subscription = event_stream.for_each({
                 let cr = cr_clone.clone();
                 let manager = manager.clone();
                 move |m| {
@@ -78,22 +93,26 @@ impl DBusFrontend {
                                 &class_iface_token,
                                 class_name,
                             );
-                            async {}
                         }
-                    }
+                        ManagerMessage::NewArtifactReserve(class_name, artifact_uuid) => {
+                            trace!("NewArtifactReserve");
+                            let mut cr_lock = cr.lock().unwrap();
+                            Self::add_artifact_reserve(
+                                &mut cr_lock,
+                                manager.clone(),
+                                &artifact_reserve_iface_token,
+                                class_name,
+                                artifact_uuid,
+                            );
+                        }
+                    };
+                    async {}
                 }
             });
 
             tokio::spawn(subscription);
         }
 
-        let artifact_classes_names = manager.lock().await.get_clases().await.unwrap();
-        {
-            let mut cr_lock = cr.lock().unwrap();
-            for c in artifact_classes_names.into_iter() {
-                Self::add_artifact_class(&mut cr_lock, manager.clone(), &class_iface_token, c);
-            }
-        }
         conn.request_name(dbus_name, false, true, false).await?;
 
         conn.start_receive(
@@ -258,15 +277,6 @@ impl DBusFrontend {
                         }
                     },
                 );
-                b.method_with_cr_async(
-                    "Abort",
-                    ("uuid",),
-                    (),
-                    move |mut ctx, _cr, (_uuid,): (String,)| async move {
-                        println!("Abort");
-                        ctx.reply(Ok(()))
-                    },
-                );
             },
         )
     }
@@ -282,6 +292,89 @@ impl DBusFrontend {
             &[*token],
             ArtifactClass {
                 name: class_name,
+                manager,
+            },
+        );
+    }
+
+    fn register_artifact_reserve_iface(cr: &mut Crossroads) -> IfaceToken<Artifact> {
+        cr.register(
+            "com.snarpix.taneleer.ArtifactReserve",
+            |b: &mut IfaceBuilder<Artifact>| {
+                b.method_with_cr_async("Commit", (), (), move |mut ctx, cr, ()| {
+                    let obj = cr
+                        .data_mut::<Artifact>(ctx.path())
+                        .cloned()
+                        .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                    async move {
+                        let res = async move {
+                            let Artifact {
+                                class_name: _class_name,
+                                uuid,
+                                manager,
+                            } = obj?;
+                            let mut manager = manager.lock().await;
+                            match manager.commit_artifact_reserve(uuid).await {
+                                Ok(()) => Ok(()),
+                                Err(e) => {
+                                    error!("Failed to commit artifact reserve: {:?}", e);
+                                    Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                        .into())
+                                }
+                            }
+                        }
+                        .await;
+                        ctx.reply(res)
+                    }
+                });
+                b.method_with_cr_async("Abort", (), (), move |mut ctx, cr, ()| {
+                    let obj = cr
+                        .data_mut::<Artifact>(ctx.path())
+                        .cloned()
+                        .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                    async move {
+                        let res = async move {
+                            let Artifact {
+                                class_name: _class_name,
+                                uuid,
+                                manager,
+                            } = obj?;
+                            let mut manager = manager.lock().await;
+                            match manager.abort_artifact_reserve(uuid).await {
+                                Ok(()) => Ok(()),
+                                Err(e) => {
+                                    error!("Failed to abort artifact reserve: {:?}", e);
+                                    Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                        .into())
+                                }
+                            }
+                        }
+                        .await;
+                        ctx.reply(res)
+                    }
+                });
+            },
+        )
+    }
+
+    fn add_artifact_reserve(
+        cr: &mut Crossroads,
+        manager: SharedArtifactManager,
+        token: &IfaceToken<Artifact>,
+        class_name: String,
+        artifact_uuid: Uuid,
+    ) {
+        cr.insert(
+            dbus::Path::new(format!(
+                "/com/snarpix/taneleer/Artifacts/{}/{}",
+                class_name,
+                artifact_uuid.to_string().replace('-', "_")
+            ))
+            .unwrap(),
+            &[*token],
+            Artifact {
+                uuid: artifact_uuid,
+                class_name,
                 manager,
             },
         );

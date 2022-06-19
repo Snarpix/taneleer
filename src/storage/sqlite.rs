@@ -212,6 +212,13 @@ impl Storage for SqliteStorage {
             .map_err(|e| e.into())
     }
 
+    async fn get_artifact_reserves(&self) -> Result<Vec<(String, Uuid)>> {
+        sqlx::query_as::<_, (String, Uuid)>(r#"SELECT AC.name, A.uuid FROM artifacts AS A JOIN artifact_classes AS AC ON A.class_id = AC.id WHERE A.state = 1;"#)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| e.into())
+    }
+
     async fn reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
@@ -293,7 +300,7 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "git", ?3, "sha1", ?4);
         Ok((backend_name, artifact_type))
     }
 
-    async fn commit_artifact_reservation(&mut self, artifact_uuid: Uuid) -> Result<()> {
+    async fn commit_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
         let rows = sqlx::query(r#"UPDATE artifacts SET state = 1 WHERE uuid = ?1 AND state = 0;"#)
             .bind(artifact_uuid.as_bytes().as_ref())
             .execute(&self.pool)

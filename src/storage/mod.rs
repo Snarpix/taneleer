@@ -25,6 +25,9 @@ pub trait Storage {
     async fn get_classes(&self) -> Result<Vec<String>>;
 
     #[must_use]
+    async fn get_artifact_reserves(&self) -> Result<Vec<(String, Uuid)>>;
+
+    #[must_use]
     async fn reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
@@ -33,7 +36,7 @@ pub trait Storage {
     ) -> Result<(String, ArtifactType)>;
 
     #[must_use]
-    async fn commit_artifact_reservation(&mut self, artifact_uuid: Uuid) -> Result<()>;
+    async fn commit_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()>;
 
     #[must_use]
     async fn rollback_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()>;

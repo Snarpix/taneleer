@@ -18,6 +18,7 @@ pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
 #[derive(Clone, Debug)]
 pub enum ManagerMessage {
     NewClass(String),
+    NewArtifactReserve(String, Uuid),
 }
 
 pub struct ArtifactManager {
@@ -69,12 +70,24 @@ impl ArtifactManager {
         self.storage.commit_class_init(&name).await?;
         self.message_broadcast
             .send(ManagerMessage::NewClass(name))
-            .unwrap();
+            .ok();
         Ok(())
     }
 
-    pub async fn get_clases(&self) -> Result<Vec<String>> {
-        self.storage.get_classes().await
+    pub async fn get_init_stream(&self) -> Result<Vec<ManagerMessage>> {
+        let classes = self
+            .storage
+            .get_classes()
+            .await?
+            .into_iter()
+            .map(ManagerMessage::NewClass);
+        let artifact_reserves = self
+            .storage
+            .get_artifact_reserves()
+            .await?
+            .into_iter()
+            .map(|(class, uuid)| ManagerMessage::NewArtifactReserve(class, uuid));
+        Ok(classes.chain(artifact_reserves).collect())
     }
 
     pub async fn reserve_artifact(
@@ -98,7 +111,16 @@ impl ArtifactManager {
         }
         .await;
         match res {
-            Ok(url) => Ok((artifact_uuid, url)),
+            Ok(url) => {
+                self.storage.commit_artifact_reserve(artifact_uuid).await?;
+                self.message_broadcast
+                    .send(ManagerMessage::NewArtifactReserve(
+                        class_name,
+                        artifact_uuid,
+                    ))
+                    .ok();
+                Ok((artifact_uuid, url))
+            }
             Err(e) => {
                 self.storage
                     .rollback_artifact_reserve(artifact_uuid)
@@ -106,5 +128,13 @@ impl ArtifactManager {
                 Err(e)
             }
         }
+    }
+
+    pub async fn commit_artifact_reserve(&mut self, uuid: Uuid) -> Result<()> {
+        todo!();
+    }
+
+    pub async fn abort_artifact_reserve(&mut self, uuid: Uuid) -> Result<()> {
+        todo!();
     }
 }
