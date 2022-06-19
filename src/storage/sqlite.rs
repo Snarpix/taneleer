@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use log::trace;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::Storage;
+use crate::artifact::ArtifactItemInfo;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::source::{Hashsum, Source};
@@ -162,6 +162,30 @@ CREATE TABLE internal_sources(
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+DROP TABLE IF EXISTS artifact_items;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+CREATE TABLE artifact_items(
+    id INTEGER PRIMARY KEY,
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    identifier TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    hash_type TEXT NOT NULL,
+    hash BLOB NOT NULL,
+    UNIQUE(artifact_id, identifier)
+) STRICT;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -219,13 +243,12 @@ impl Storage for SqliteStorage {
             .map_err(|e| e.into())
     }
 
-    async fn reserve_artifact(
+    async fn begin_reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
         sources: &[(String, Source)],
     ) -> Result<(String, ArtifactType)> {
-        trace!("Sqlite reserve_artifact");
         let mut t = self.pool.begin().await?;
         let (artifact_class_id, backend_name, artifact_type): (i64, String, String) = sqlx::query_as(
             r#"SELECT id, backend, artifact_type FROM artifact_classes WHERE name = ?1 AND state = 1;"#,
@@ -233,12 +256,9 @@ impl Storage for SqliteStorage {
         .bind(class_name)
         .fetch_one(&mut t)
         .await?;
-        trace!("get artifact_type");
         let artifact_type: ArtifactType = artifact_type
             .parse()
             .map_err(|_| SqliteError::InvalidArtifactType)?;
-
-        trace!("insert");
 
         sqlx::query(
             r#"INSERT INTO artifacts(uuid, class_id, reserve_time) VALUES (?1, ?2, UNIXEPOCH());"#,
@@ -249,7 +269,6 @@ impl Storage for SqliteStorage {
         .await?;
 
         for (source_name, source_meta) in sources {
-            trace!("source: {}", source_name);
             match source_meta {
                 Source::Artifact { uuid } => {
                     sqlx::query(
@@ -315,18 +334,107 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "git", ?3, "sha1", ?4);
     async fn rollback_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
         let mut t = self.pool.begin().await?;
         sqlx::query(r#"DELETE FROM internal_sources WHERE artifact_id = (SELECT id FROM artifacts WHERE uuid = ?1 AND state = 0);"#)
-        .bind(artifact_uuid.as_bytes().as_ref())
-        .execute(&mut t)
-        .await?;
+            .bind(artifact_uuid.as_bytes().as_ref())
+            .execute(&mut t)
+            .await?;
         sqlx::query(r#"DELETE FROM external_sources WHERE artifact_id = (SELECT id FROM artifacts WHERE uuid = ?1 AND state = 0);"#)
-        .bind(artifact_uuid.as_bytes().as_ref())
-        .execute(&mut t)
-        .await?;
+            .bind(artifact_uuid.as_bytes().as_ref())
+            .execute(&mut t)
+            .await?;
         sqlx::query(r#"DELETE FROM artifacts WHERE uuid = ?1 AND state = 0;"#)
             .bind(artifact_uuid.as_bytes().as_ref())
             .execute(&mut t)
             .await?;
         t.commit().await?;
+        Ok(())
+    }
+
+    async fn begin_artifact_commit(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(String, String, ArtifactType)> {
+        let mut t = self.pool.begin().await?;
+        let (artifact_class_name, backend_name, artifact_type): (String, String, String) =
+            sqlx::query_as(
+                r#"
+SELECT AC.name, AC.backend, AC.artifact_type 
+FROM artifacts AS A 
+JOIN artifact_classes AS AC ON A.class_id = AC.id 
+WHERE A.uuid = ?1 AND A.state = 1;"#,
+            )
+            .bind(artifact_uuid)
+            .fetch_one(&mut t)
+            .await?;
+
+        let artifact_type: ArtifactType = artifact_type
+            .parse()
+            .map_err(|_| SqliteError::InvalidArtifactType)?;
+
+        let rows = sqlx::query(r#"UPDATE artifacts SET state = 2 WHERE uuid = ?1 AND state = 1;"#)
+            .bind(artifact_uuid)
+            .execute(&mut t)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+
+        t.commit().await?;
+        Ok((artifact_class_name, backend_name, artifact_type))
+    }
+
+    async fn commit_artifact_commit(
+        &mut self,
+        artifact_uuid: Uuid,
+        artifact_items: Vec<ArtifactItemInfo>,
+    ) -> Result<()> {
+        let mut t = self.pool.begin().await?;
+        let artifact_id = sqlx::query_scalar::<_, i64>(
+            r#"SELECT id FROM artifacts WHERE uuid = ?1 AND state = 2;"#,
+        )
+        .bind(artifact_uuid)
+        .fetch_one(&mut t)
+        .await?;
+
+        for item in artifact_items {
+            match item.hash {
+                Hashsum::Sha256(hash) => {
+                    sqlx::query(
+                        r#"
+INSERT INTO artifact_items(artifact_id, identifier, size, hash_type, hash) 
+VALUES (?1, ?2, ?3, "sha256", ?4);
+                        "#,
+                    )
+                    .bind(artifact_id)
+                    .bind(item.id)
+                    .bind(item.size as i64)
+                    .bind(hash.as_ref())
+                    .execute(&mut t)
+                    .await?;
+                }
+            }
+        }
+        let rows = sqlx::query(r#"UPDATE artifacts SET state = 3, commit_time = UNIXEPOCH() WHERE id = ?1 AND state = 2;"#)
+            .bind(artifact_id)
+            .execute(&mut t)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+        t.commit().await?;
+        Ok(())
+    }
+
+    async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid) -> Result<()> {
+        let rows = sqlx::query(r#"UPDATE artifacts SET state = -1 WHERE uuid = ?1 AND state = 2;"#)
+            .bind(artifact_uuid)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
         Ok(())
     }
 }

@@ -98,7 +98,7 @@ impl ArtifactManager {
         let artifact_uuid = Uuid::new_v4();
         let (backend_name, artifact_type) = self
             .storage
-            .reserve_artifact(artifact_uuid, &class_name, &sources)
+            .begin_reserve_artifact(artifact_uuid, &class_name, &sources)
             .await?;
         let res = async {
             let backend = self
@@ -130,11 +130,40 @@ impl ArtifactManager {
         }
     }
 
-    pub async fn commit_artifact_reserve(&mut self, uuid: Uuid) -> Result<()> {
-        todo!();
+    pub async fn commit_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
+        let (class_name, backend_name, artifact_type) =
+            self.storage.begin_artifact_commit(artifact_uuid).await?;
+        let res = async {
+            let backend = self
+                .backends
+                .get_mut(&backend_name)
+                .ok_or(ManagerError::BackendNotExists)?;
+            backend
+                .commit_artifact(&class_name, artifact_type, artifact_uuid)
+                .await
+        }
+        .await;
+        match res {
+            Ok(artifact_items) => {
+                self.storage
+                    .commit_artifact_commit(artifact_uuid, artifact_items)
+                    .await?;
+                self.message_broadcast
+                    .send(ManagerMessage::NewArtifactReserve(
+                        class_name,
+                        artifact_uuid,
+                    ))
+                    .ok();
+                Ok(())
+            }
+            Err(e) => {
+                self.storage.fail_artifact_commit(artifact_uuid).await?;
+                Err(e)
+            }
+        }
     }
 
-    pub async fn abort_artifact_reserve(&mut self, uuid: Uuid) -> Result<()> {
+    pub async fn abort_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
         todo!();
     }
 }

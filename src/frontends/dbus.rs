@@ -10,7 +10,7 @@ use dbus::MethodErr;
 use dbus_crossroads::{Crossroads, IfaceBuilder, IfaceToken};
 use dbus_tokio::connection::{self, IOResourceError};
 use futures::StreamExt;
-use log::{error, trace};
+use log::error;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -95,7 +95,6 @@ impl DBusFrontend {
                             );
                         }
                         ManagerMessage::NewArtifactReserve(class_name, artifact_uuid) => {
-                            trace!("NewArtifactReserve");
                             let mut cr_lock = cr.lock().unwrap();
                             Self::add_artifact_reserve(
                                 &mut cr_lock,

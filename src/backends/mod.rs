@@ -7,6 +7,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    artifact::ArtifactItemInfo,
     class::{ArtifactClassData, ArtifactType},
     config::backend::{ConfigBackend, ConfigFsBackend},
     error::Result,
@@ -24,6 +25,14 @@ pub trait Backend {
         art_type: ArtifactType,
         uuid: Uuid,
     ) -> Result<Url>;
+
+    #[must_use]
+    async fn commit_artifact(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<Vec<ArtifactItemInfo>>;
 }
 
 pub type Backends = HashMap<String, Box<dyn Backend + Send + Sync>>;

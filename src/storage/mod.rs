@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::{
+    artifact::ArtifactItemInfo,
     class::{ArtifactClassData, ArtifactType},
     config::storage::{ConfigSqliteStorage, ConfigStorage},
     error::Result,
@@ -28,7 +29,7 @@ pub trait Storage {
     async fn get_artifact_reserves(&self) -> Result<Vec<(String, Uuid)>>;
 
     #[must_use]
-    async fn reserve_artifact(
+    async fn begin_reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
@@ -40,6 +41,22 @@ pub trait Storage {
 
     #[must_use]
     async fn rollback_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
+    async fn begin_artifact_commit(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(String, String, ArtifactType)>;
+
+    #[must_use]
+    async fn commit_artifact_commit(
+        &mut self,
+        artifact_uuid: Uuid,
+        artifact_items: Vec<ArtifactItemInfo>,
+    ) -> Result<()>;
+
+    #[must_use]
+    async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid) -> Result<()>;
 }
 
 pub async fn from_config(config: &ConfigStorage) -> Result<Box<dyn Storage + Send + Sync>> {

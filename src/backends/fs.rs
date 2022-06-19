@@ -1,13 +1,19 @@
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::result::Result as StdResult;
 
 use async_trait::async_trait;
 use log::warn;
+use sha2::Digest;
+use tokio::io::AsyncReadExt;
 use url::Url;
 use uuid::Uuid;
 
 use super::Backend;
+use crate::artifact::ArtifactItemInfo;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
+use crate::source::{Hashsum, Sha256};
 
 pub struct FsBackend {
     root_path: std::path::PathBuf,
@@ -104,4 +110,50 @@ impl Backend for FsBackend {
         }
         res.map_err(|e| e.into())
     }
+
+    async fn commit_artifact(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<Vec<ArtifactItemInfo>> {
+        let uuid_str = uuid.to_string();
+        let mut dir_path = self.root_path.clone();
+        dir_path.push(class_name);
+        dir_path.push(uuid_str);
+        tokio::fs::set_permissions(&dir_path, PermissionsExt::from_mode(0o700)).await?;
+        match art_type {
+            ArtifactType::File => {
+                let mut file_path = dir_path.clone();
+                file_path.push("artifact");
+                tokio::fs::set_permissions(&file_path, PermissionsExt::from_mode(0o600)).await?;
+                let meta = tokio::fs::metadata(&file_path).await?;
+                let file_size = meta.len();
+                let file_hash = hash_file_sha256(&file_path).await?;
+                Ok(vec![ArtifactItemInfo {
+                    id: "artifact".to_string(),
+                    size: file_size,
+                    hash: Hashsum::Sha256(file_hash),
+                }])
+            }
+        }
+    }
+}
+
+async fn hash_file_sha256(file_path: &Path) -> StdResult<Sha256, tokio::io::Error> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(file_path)
+        .await?;
+    let mut buffer = bytes::BytesMut::with_capacity(1 * 1024 * 1024);
+    let mut hasher = sha2::Sha256::new();
+    while file.read_buf(&mut buffer).await? != 0 {
+        let handle = tokio::task::spawn_blocking(move || {
+            hasher.update(&mut buffer);
+            buffer.clear();
+            (hasher, buffer)
+        });
+        (hasher, buffer) = handle.await?;
+    }
+    Ok(*hasher.finalize().as_ref())
 }
