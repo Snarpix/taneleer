@@ -34,6 +34,7 @@ pub trait Storage {
         artifact_uuid: Uuid,
         class_name: &str,
         sources: &[(String, Source)],
+        tags: &[(String, Option<String>)],
     ) -> Result<(String, ArtifactType)>;
 
     #[must_use]
@@ -46,6 +47,7 @@ pub trait Storage {
     async fn begin_artifact_commit(
         &mut self,
         artifact_uuid: Uuid,
+        tags: &[(String, Option<String>)],
     ) -> Result<(String, String, ArtifactType)>;
 
     #[must_use]

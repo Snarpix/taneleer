@@ -94,11 +94,12 @@ impl ArtifactManager {
         &mut self,
         class_name: String,
         sources: Vec<(String, Source)>,
+        tags: Vec<(String, Option<String>)>,
     ) -> Result<(Uuid, Url)> {
         let artifact_uuid = Uuid::new_v4();
         let (backend_name, artifact_type) = self
             .storage
-            .begin_reserve_artifact(artifact_uuid, &class_name, &sources)
+            .begin_reserve_artifact(artifact_uuid, &class_name, &sources, &tags)
             .await?;
         let res = async {
             let backend = self
@@ -130,9 +131,15 @@ impl ArtifactManager {
         }
     }
 
-    pub async fn commit_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
-        let (class_name, backend_name, artifact_type) =
-            self.storage.begin_artifact_commit(artifact_uuid).await?;
+    pub async fn commit_artifact_reserve(
+        &mut self,
+        artifact_uuid: Uuid,
+        tags: Vec<(String, Option<String>)>,
+    ) -> Result<()> {
+        let (class_name, backend_name, artifact_type) = self
+            .storage
+            .begin_artifact_commit(artifact_uuid, &tags)
+            .await?;
         let res = async {
             let backend = self
                 .backends

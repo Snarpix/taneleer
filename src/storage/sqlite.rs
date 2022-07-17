@@ -186,6 +186,27 @@ CREATE TABLE artifact_items(
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+DROP TABLE IF EXISTS artifact_tags;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+CREATE TABLE artifact_tags(
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    name TEXT NOT NULL,
+    value TEXT,
+    UNIQUE(artifact_id, name)
+) STRICT;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -248,6 +269,7 @@ impl Storage for SqliteStorage {
         artifact_uuid: Uuid,
         class_name: &str,
         sources: &[(String, Source)],
+        tags: &[(String, Option<String>)],
     ) -> Result<(String, ArtifactType)> {
         let mut t = self.pool.begin().await?;
         let (artifact_class_id, backend_name, artifact_type): (i64, String, String) = sqlx::query_as(
@@ -315,6 +337,19 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "git", ?3, "sha1", ?4);
                 }
             }
         }
+        for (tag_name, tag_value) in tags {
+            sqlx::query(
+                r#"
+INSERT INTO artifact_tags(artifact_id, name, value) 
+VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
+            "#,
+            )
+            .bind(artifact_uuid.as_bytes().as_ref())
+            .bind(tag_name)
+            .bind(tag_value)
+            .execute(&mut t)
+            .await?;
+        }
         t.commit().await?;
         Ok((backend_name, artifact_type))
     }
@@ -352,6 +387,7 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "git", ?3, "sha1", ?4);
     async fn begin_artifact_commit(
         &mut self,
         artifact_uuid: Uuid,
+        tags: &[(String, Option<String>)],
     ) -> Result<(String, String, ArtifactType)> {
         let mut t = self.pool.begin().await?;
         let (artifact_class_name, backend_name, artifact_type): (String, String, String) =
@@ -369,6 +405,40 @@ WHERE A.uuid = ?1 AND A.state = 1;"#,
         let artifact_type: ArtifactType = artifact_type
             .parse()
             .map_err(|_| SqliteError::InvalidArtifactType)?;
+
+        for (tag_name, tag_value) in tags {
+            if let Err(e) = sqlx::query(
+                r#"
+INSERT INTO artifact_tags(artifact_id, name, value) 
+VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
+            "#,
+            )
+            .bind(artifact_uuid)
+            .bind(tag_name)
+            .bind(tag_value)
+            .execute(&mut t)
+            .await
+            {
+                if let sqlx::Error::Database(e) = &e {
+                    if e.code().map(|code| code == "2067").unwrap_or(false) {
+                        // Tag exists, update value
+                        sqlx::query(
+                            r#"
+UPDATE artifact_tags SET value = ?1 
+WHERE artifact_id = (SELECT id FROM artifacts WHERE uuid = ?2) AND name = ?3;
+                        "#,
+                        )
+                        .bind(tag_value)
+                        .bind(artifact_uuid)
+                        .bind(tag_name)
+                        .execute(&mut t)
+                        .await?;
+                        continue;
+                    }
+                }
+                return Err(e.into());
+            }
+        }
 
         let rows = sqlx::query(r#"UPDATE artifacts SET state = 2 WHERE uuid = ?1 AND state = 1;"#)
             .bind(artifact_uuid)
