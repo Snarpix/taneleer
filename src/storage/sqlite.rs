@@ -419,6 +419,10 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
             .bind(artifact_id)
             .execute(&mut t)
             .await?;
+        sqlx::query(r#"DELETE FROM artifact_tags WHERE artifact_id = ?1;"#)
+            .bind(artifact_id)
+            .execute(&mut t)
+            .await?;
         let rows = sqlx::query(r#"DELETE FROM artifacts WHERE id = ?1;"#)
             .bind(artifact_id)
             .execute(&mut t)
@@ -605,5 +609,9 @@ VALUES (?1, ?2, UNIXEPOCH());
             backend_name,
             artifact_type,
         ))
+    }
+
+    async fn fail_get_artifact(&mut self, artifact_uuid: Uuid) -> Result<()> {
+        Ok(())
     }
 }

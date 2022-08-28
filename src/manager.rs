@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use log::warn;
 use tokio::sync::broadcast::{self, Sender as BSender};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::BroadcastStream;
@@ -7,7 +8,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::artifact::ArtifactState;
-use crate::backends::Backends;
+use crate::backend_pack::Backends;
 use crate::class::ArtifactClassData;
 use crate::error::Result;
 use crate::source::Source;
@@ -33,6 +34,7 @@ pub struct ArtifactManager {
 #[derive(Debug)]
 pub enum ManagerError {
     BackendNotExists,
+    ProxyNotExists,
 }
 
 impl std::fmt::Display for ManagerError {
@@ -98,6 +100,7 @@ impl ArtifactManager {
         class_name: String,
         sources: Vec<(String, Source)>,
         tags: Vec<(String, Option<String>)>,
+        proxy: Option<String>,
     ) -> Result<(Uuid, Url)> {
         let artifact_uuid = Uuid::new_v4();
         let (backend_name, artifact_type) = self
@@ -110,7 +113,7 @@ impl ArtifactManager {
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
             backend
-                .reserve_artifact(&class_name, artifact_type, artifact_uuid)
+                .reserve_artifact(proxy.as_deref(), &class_name, artifact_type, artifact_uuid)
                 .await
         }
         .await;
@@ -127,6 +130,7 @@ impl ArtifactManager {
                 Ok((artifact_uuid, url))
             }
             Err(e) => {
+                warn!("Error during creating reserve: {:?}", &e);
                 self.storage
                     .rollback_artifact_reserve(artifact_uuid)
                     .await?;
@@ -175,11 +179,15 @@ impl ArtifactManager {
         }
     }
 
-    pub async fn abort_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
+    pub async fn abort_artifact_reserve(&mut self, _artifact_uuid: Uuid) -> Result<()> {
         todo!();
     }
 
-    pub async fn get_artifact(&mut self, artifact_uuid: Uuid) -> Result<(Uuid, String)> {
+    pub async fn get_artifact(
+        &mut self,
+        artifact_uuid: Uuid,
+        proxy: Option<String>,
+    ) -> Result<(Uuid, String)> {
         let (artifact_usage_uuid, class_name, backend_name, artifact_type) =
             self.storage.get_artifact(artifact_uuid).await?;
         let res = async {
@@ -188,14 +196,14 @@ impl ArtifactManager {
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
             backend
-                .get_artifact(&class_name, artifact_type, artifact_uuid)
+                .get_artifact(proxy.as_deref(), &class_name, artifact_type, artifact_uuid)
                 .await
         }
         .await;
         match res {
             Ok(url) => Ok((artifact_usage_uuid, url.to_string())),
             Err(e) => {
-                self.storage.fail_artifact_commit(artifact_uuid).await?;
+                self.storage.fail_get_artifact(artifact_uuid).await?;
                 Err(e)
             }
         }

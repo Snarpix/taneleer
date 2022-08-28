@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod frontend;
+pub mod proxy;
 pub mod storage;
 
 use std::collections::HashMap;

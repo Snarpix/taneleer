@@ -320,11 +320,12 @@ impl DBusFrontendInner {
             |b: &mut IfaceBuilder<ArtifactClass>| {
                 b.method_with_cr_async(
                     "Reserve",
-                    ("sources", "tags"),
+                    ("proxy", "sources", "tags"),
                     ("uuid", "url"),
                     move |mut ctx,
                           cr,
-                          (sources, tags): (
+                          (proxy, sources, tags): (
+                        String,
                         HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
                         Vec<(String, String)>,
                     )| {
@@ -427,8 +428,13 @@ impl DBusFrontendInner {
                                     })
                                     .collect();
 
+                                let proxy = if proxy.is_empty() { None } else { Some(proxy) };
+
                                 let mut manager = manager.lock().await;
-                                match manager.reserve_artifact(name, sources_conv, tags).await {
+                                match manager
+                                    .reserve_artifact(name, sources_conv, tags, proxy)
+                                    .await
+                                {
                                     Ok((uuid, url)) => Ok((uuid.to_string(), url.to_string())),
                                     Err(e) => {
                                         error!("Failed to reserve artifact: {:?}", e);
@@ -525,9 +531,9 @@ impl DBusFrontendInner {
             |b: &mut IfaceBuilder<Artifact>| {
                 b.method_with_cr_async(
                     "Get",
-                    (),
+                    ("proxy",),
                     ("reserve_uuid", "url"),
-                    move |mut ctx, cr, ()| {
+                    move |mut ctx, cr, (proxy,): (String,)| {
                         let obj = cr
                             .data_mut::<Artifact>(ctx.path())
                             .cloned()
@@ -539,8 +545,11 @@ impl DBusFrontendInner {
                                     uuid,
                                     manager,
                                 } = obj?;
+
+                                let proxy = if proxy.is_empty() { None } else { Some(proxy) };
+
                                 let mut manager = manager.lock().await;
-                                match manager.get_artifact(uuid).await {
+                                match manager.get_artifact(uuid, proxy).await {
                                     Ok((reserve_uuid, url)) => Ok((reserve_uuid.to_string(), url)),
                                     Err(e) => {
                                         error!("Failed to get artifact: {:?}", e);

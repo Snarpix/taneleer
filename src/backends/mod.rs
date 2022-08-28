@@ -1,7 +1,5 @@
 mod fs;
 
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 use url::Url;
 use uuid::Uuid;
@@ -9,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     artifact::ArtifactItemInfo,
     class::{ArtifactClassData, ArtifactType},
-    config::backend::{ConfigBackend, ConfigFsBackend},
+    config::backend::{ConfigBackendTypes, ConfigFsBackend},
     error::Result,
 };
 
@@ -43,11 +41,11 @@ pub trait Backend {
     ) -> Result<Url>;
 }
 
-pub type Backends = HashMap<String, Box<dyn Backend + Send + Sync>>;
-
-pub async fn from_config(config: &ConfigBackend) -> Result<Box<dyn Backend + Send + Sync>> {
+pub async fn backend_from_config(
+    config: &ConfigBackendTypes,
+) -> Result<Box<dyn Backend + Send + Sync>> {
     match config {
-        ConfigBackend::Fs(ConfigFsBackend { root_path }) => {
+        ConfigBackendTypes::Fs(ConfigFsBackend { root_path }) => {
             Ok(Box::new(fs::FsBackend::new(root_path).await?))
         }
     }

@@ -1,10 +1,12 @@
 mod artifact;
+mod backend_pack;
 mod backends;
 mod class;
 mod config;
 mod error;
 mod frontends;
 mod manager;
+mod proxies;
 mod source;
 mod storage;
 
@@ -12,7 +14,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use backends::Backends;
+use backend_pack::Backends;
 use config::Config;
 use error::Result;
 use manager::ArtifactManager;
@@ -28,7 +30,7 @@ async fn main() -> Result<()> {
     for (backend_name, backend_config) in &config.backends {
         backends.insert(
             backend_name.clone(),
-            backends::from_config(backend_config).await?,
+            backend_pack::from_config(backend_config).await?,
         );
     }
 
