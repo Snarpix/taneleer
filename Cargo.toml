@@ -3,6 +3,7 @@ name = "taneleer"
 authors = ["Stanislav Shmarov <github@snarpix.com>"]
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-only"
 
 [dependencies]
 dbus = "0.9.5"
