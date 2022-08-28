@@ -203,7 +203,9 @@ impl ArtifactManager {
         match res {
             Ok(url) => Ok((artifact_usage_uuid, url.to_string())),
             Err(e) => {
-                self.storage.fail_get_artifact(artifact_uuid).await?;
+                self.storage
+                    .release_artifact_usage(artifact_usage_uuid)
+                    .await?;
                 Err(e)
             }
         }

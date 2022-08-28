@@ -611,7 +611,15 @@ VALUES (?1, ?2, UNIXEPOCH());
         ))
     }
 
-    async fn fail_get_artifact(&mut self, artifact_uuid: Uuid) -> Result<()> {
+    async fn release_artifact_usage(&mut self, artifact_usage_uuid: Uuid) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM artifact_usage WHERE uuid = ?1;
+            "#,
+        )
+        .bind(artifact_usage_uuid)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

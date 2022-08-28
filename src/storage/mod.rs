@@ -67,7 +67,7 @@ pub trait Storage {
     ) -> Result<(Uuid, String, String, ArtifactType)>;
 
     #[must_use]
-    async fn fail_get_artifact(&mut self, artifact_uuid: Uuid) -> Result<()>;
+    async fn release_artifact_usage(&mut self, artifact_usage_uuid: Uuid) -> Result<()>;
 }
 
 pub async fn from_config(config: &ConfigStorage) -> Result<Box<dyn Storage + Send + Sync>> {
