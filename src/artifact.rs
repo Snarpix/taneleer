@@ -1,15 +1,14 @@
-use sqlx::Row;
+use sqlx::{sqlite::SqliteRow, Row};
 
 use crate::source::Hashsum;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, sqlx::Type)]
+#[repr(i64)]
 pub enum ArtifactState {
-    CommitFailed = -1,
-    StartReserve = 0,
-    Reserve = 1,
-    StartCommit = 2,
-    Commit = 3,
-    StartRemove = 4,
+    Created = 0,
+    Reserved = 1,
+    Committed = 2,
+    Deleted = 3,
 }
 
 pub struct ArtifactItemInfo {
@@ -18,8 +17,8 @@ pub struct ArtifactItemInfo {
     pub hash: Hashsum,
 }
 
-impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for ArtifactItemInfo {
-    fn from_row(row: &sqlx::sqlite::SqliteRow) -> sqlx::Result<Self> {
+impl sqlx::FromRow<'_, SqliteRow> for ArtifactItemInfo {
+    fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
         let hash_type = row.try_get("hash_type")?;
         let hash_cnt = row.try_get("hash")?;
         let hash =

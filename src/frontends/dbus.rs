@@ -11,11 +11,12 @@ use dbus_crossroads::{Crossroads, IfaceBuilder, IfaceToken};
 use dbus_tokio::connection::{self, IOResourceError};
 use futures::StreamExt;
 use log::error;
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::Frontend;
+use crate::artifact::ArtifactState;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::manager::{ArtifactManager, ManagerMessage, SharedArtifactManager};
@@ -24,6 +25,15 @@ use crate::source::{Hashsum, Sha1, Sha256, Source};
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
     _conn: Arc<SyncConnection>,
+    _subscr_handle: JoinHandle<()>,
+}
+
+struct DBusFrontendInner {
+    cr: Arc<StdMutex<Crossroads>>,
+    manager: Arc<TokioMutex<ArtifactManager>>,
+    class_iface_token: IfaceToken<ArtifactClass>,
+    artifact_reserve_iface_token: IfaceToken<Artifact>,
+    artifact_iface_token: IfaceToken<Artifact>,
 }
 
 #[derive(Clone)]
@@ -46,15 +56,10 @@ impl DBusFrontend {
         manager: SharedArtifactManager,
     ) -> Result<DBusFrontend> {
         let (resource, conn) = connection::new::<SyncConnection>(bus)?;
-
         let handle = tokio::spawn(resource);
 
         let cr = Arc::new(StdMutex::new(Crossroads::new()));
-        let cr_clone = cr.clone();
-        let class_iface_token;
-        let artifact_reserve_iface_token;
-        let artifact_iface_token;
-        {
+        let subscr_handle = {
             let mut cr_lock = cr.lock().unwrap();
 
             cr_lock.set_async_support(Some((
@@ -71,9 +76,6 @@ impl DBusFrontend {
                 manager.clone(),
             );
 
-            class_iface_token = Self::register_class_iface(&mut cr_lock);
-            artifact_reserve_iface_token = Self::register_artifact_reserve_iface(&mut cr_lock);
-            artifact_iface_token = Self::register_artifact_iface(&mut cr_lock);
             let event_stream = {
                 let manager = manager.lock().await;
                 let new_events = manager.subscribe();
@@ -81,57 +83,18 @@ impl DBusFrontend {
                     futures::stream::iter(manager.get_init_stream().await.unwrap()).map(Ok);
                 old_events.chain(new_events)
             };
+
+            let inner_dbus = Arc::new(DBusFrontendInner::new(cr.clone(), manager, &mut cr_lock));
             let subscription = event_stream.for_each({
-                let cr = cr_clone.clone();
-                let manager = manager.clone();
                 move |m| {
                     let m = m.unwrap();
-                    match m {
-                        ManagerMessage::NewClass(class_name) => {
-                            let mut cr_lock = cr.lock().unwrap();
-                            Self::add_artifact_class(
-                                &mut cr_lock,
-                                manager.clone(),
-                                &class_iface_token,
-                                class_name,
-                            );
-                        }
-                        ManagerMessage::NewArtifactReserve(class_name, artifact_uuid) => {
-                            let mut cr_lock = cr.lock().unwrap();
-                            Self::add_artifact_reserve(
-                                &mut cr_lock,
-                                manager.clone(),
-                                &artifact_reserve_iface_token,
-                                class_name,
-                                artifact_uuid,
-                            );
-                        }
-                        ManagerMessage::RemoveArtifactReserve(class_name, artifact_uuid) => {
-                            let mut cr_lock = cr.lock().unwrap();
-                            Self::remove_artifact_reserve(
-                                &mut cr_lock,
-                                manager.clone(),
-                                class_name,
-                                artifact_uuid,
-                            );
-                        }
-                        ManagerMessage::NewArtifact(class_name, artifact_uuid) => {
-                            let mut cr_lock = cr.lock().unwrap();
-                            Self::add_artifact_reserve(
-                                &mut cr_lock,
-                                manager.clone(),
-                                &artifact_iface_token,
-                                class_name,
-                                artifact_uuid,
-                            );
-                        }
-                    };
+                    inner_dbus.handle_message(m);
                     async {}
                 }
             });
 
-            tokio::spawn(subscription);
-        }
+            tokio::spawn(subscription)
+        };
 
         conn.request_name(dbus_name, false, true, false).await?;
 
@@ -146,10 +109,11 @@ impl DBusFrontend {
         Ok(DBusFrontend {
             handle,
             _conn: conn,
+            _subscr_handle: subscr_handle,
         })
     }
 
-    fn register_manager_iface(cr: &mut Crossroads) -> IfaceToken<Arc<Mutex<ArtifactManager>>> {
+    fn register_manager_iface(cr: &mut Crossroads) -> IfaceToken<Arc<TokioMutex<ArtifactManager>>> {
         cr.register(
             "com.snarpix.taneleer.ArtifactManager",
             |b: &mut IfaceBuilder<SharedArtifactManager>| {
@@ -205,6 +169,149 @@ impl DBusFrontend {
                 });
             },
         )
+    }
+}
+
+impl DBusFrontendInner {
+    fn new(
+        cr_arc: Arc<StdMutex<Crossroads>>,
+        manager: SharedArtifactManager,
+        cr: &mut Crossroads,
+    ) -> Self {
+        let class_iface_token = Self::register_class_iface(cr);
+        let artifact_reserve_iface_token = Self::register_artifact_reserve_iface(cr);
+        let artifact_iface_token = Self::register_artifact_iface(cr);
+        DBusFrontendInner {
+            cr: cr_arc,
+            manager,
+            class_iface_token,
+            artifact_reserve_iface_token,
+            artifact_iface_token,
+        }
+    }
+
+    fn handle_message(&self, m: ManagerMessage) {
+        match m {
+            ManagerMessage::NewClass(class_name) => {
+                self.add_artifact_class(class_name);
+            }
+            ManagerMessage::NewArtifact(class_name, artifact_uuid, artifact_state) => {
+                self.add_artifact(class_name, artifact_uuid, artifact_state);
+            }
+            ManagerMessage::ArtifactUpdate(class_name, artifact_uuid, artifact_state) => {
+                self.update_artifact(class_name, artifact_uuid, artifact_state);
+            }
+            ManagerMessage::RemoveArtifact(class_name, artifact_uuid, artifact_state) => {
+                self.remove_artifact(class_name, artifact_uuid, artifact_state);
+            }
+        };
+    }
+
+    fn add_artifact_class(&self, class_name: String) {
+        self.cr.lock().unwrap().insert(
+            dbus::Path::new(format!("/com/snarpix/taneleer/Artifacts/{}", class_name)).unwrap(),
+            &[self.class_iface_token],
+            ArtifactClass {
+                name: class_name,
+                manager: self.manager.clone(),
+            },
+        );
+    }
+
+    fn add_artifact(&self, class_name: String, artifact_uuid: Uuid, artifact_state: ArtifactState) {
+        let mut cr = self.cr.lock().unwrap();
+        match artifact_state {
+            ArtifactState::Committed => {
+                cr.insert(
+                    dbus::Path::new(format!(
+                        "/com/snarpix/taneleer/Artifacts/{}/{}",
+                        class_name,
+                        artifact_uuid.to_string().replace('-', "_")
+                    ))
+                    .unwrap(),
+                    &[self.artifact_iface_token],
+                    Artifact {
+                        uuid: artifact_uuid,
+                        class_name,
+                        manager: self.manager.clone(),
+                    },
+                );
+            }
+            ArtifactState::Reserved => {
+                cr.insert(
+                    dbus::Path::new(format!(
+                        "/com/snarpix/taneleer/Artifacts/{}/{}",
+                        class_name,
+                        artifact_uuid.to_string().replace('-', "_")
+                    ))
+                    .unwrap(),
+                    &[self.artifact_reserve_iface_token],
+                    Artifact {
+                        uuid: artifact_uuid,
+                        class_name,
+                        manager: self.manager.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn update_artifact(
+        &self,
+        class_name: String,
+        artifact_uuid: Uuid,
+        artifact_state: ArtifactState,
+    ) {
+        let mut cr = self.cr.lock().unwrap();
+        let path = dbus::Path::new(format!(
+            "/com/snarpix/taneleer/Artifacts/{}/{}",
+            class_name,
+            artifact_uuid.to_string().replace('-', "_")
+        ))
+        .unwrap();
+        match artifact_state {
+            ArtifactState::Committed => {
+                cr.remove_interface(path.clone(), self.artifact_iface_token);
+                cr.insert(
+                    path,
+                    &[self.artifact_iface_token],
+                    Artifact {
+                        uuid: artifact_uuid,
+                        class_name,
+                        manager: self.manager.clone(),
+                    },
+                );
+            }
+            ArtifactState::Reserved => {
+                cr.insert(
+                    path,
+                    &[self.artifact_reserve_iface_token],
+                    Artifact {
+                        uuid: artifact_uuid,
+                        class_name,
+                        manager: self.manager.clone(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn remove_artifact(
+        &self,
+        class_name: String,
+        artifact_uuid: Uuid,
+        _artifact_state: ArtifactState,
+    ) {
+        self.cr.lock().unwrap().remove::<Artifact>(
+            &dbus::Path::new(format!(
+                "/com/snarpix/taneleer/Artifacts/{}/{}",
+                class_name,
+                artifact_uuid.to_string().replace('-', "_")
+            ))
+            .unwrap(),
+        );
     }
 
     fn register_class_iface(cr: &mut Crossroads) -> IfaceToken<ArtifactClass> {
@@ -339,22 +446,6 @@ impl DBusFrontend {
         )
     }
 
-    fn add_artifact_class(
-        cr: &mut Crossroads,
-        manager: SharedArtifactManager,
-        token: &IfaceToken<ArtifactClass>,
-        class_name: String,
-    ) {
-        cr.insert(
-            dbus::Path::new(format!("/com/snarpix/taneleer/Artifacts/{}", class_name)).unwrap(),
-            &[*token],
-            ArtifactClass {
-                name: class_name,
-                manager,
-            },
-        );
-    }
-
     fn register_artifact_reserve_iface(cr: &mut Crossroads) -> IfaceToken<Artifact> {
         cr.register(
             "com.snarpix.taneleer.ArtifactReserve",
@@ -452,7 +543,7 @@ impl DBusFrontend {
                                 match manager.get_artifact(uuid).await {
                                     Ok((reserve_uuid, url)) => Ok((reserve_uuid.to_string(), url)),
                                     Err(e) => {
-                                        error!("Failed to abort artifact reserve: {:?}", e);
+                                        error!("Failed to get artifact: {:?}", e);
                                         Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
                                             .into())
                                     }
@@ -465,45 +556,6 @@ impl DBusFrontend {
                 );
             },
         )
-    }
-
-    fn add_artifact_reserve(
-        cr: &mut Crossroads,
-        manager: SharedArtifactManager,
-        token: &IfaceToken<Artifact>,
-        class_name: String,
-        artifact_uuid: Uuid,
-    ) {
-        cr.insert(
-            dbus::Path::new(format!(
-                "/com/snarpix/taneleer/Artifacts/{}/{}",
-                class_name,
-                artifact_uuid.to_string().replace('-', "_")
-            ))
-            .unwrap(),
-            &[*token],
-            Artifact {
-                uuid: artifact_uuid,
-                class_name,
-                manager,
-            },
-        );
-    }
-
-    fn remove_artifact_reserve(
-        cr: &mut Crossroads,
-        manager: SharedArtifactManager,
-        class_name: String,
-        artifact_uuid: Uuid,
-    ) {
-        cr.remove::<Artifact>(
-            &dbus::Path::new(format!(
-                "/com/snarpix/taneleer/Artifacts/{}/{}",
-                class_name,
-                artifact_uuid.to_string().replace('-', "_")
-            ))
-            .unwrap(),
-        );
     }
 }
 

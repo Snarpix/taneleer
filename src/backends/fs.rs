@@ -121,12 +121,12 @@ impl Backend for FsBackend {
         let mut dir_path = self.root_path.clone();
         dir_path.push(class_name);
         dir_path.push(uuid_str);
-        tokio::fs::set_permissions(&dir_path, PermissionsExt::from_mode(0o700)).await?;
+        tokio::fs::set_permissions(&dir_path, PermissionsExt::from_mode(0o500)).await?;
         match art_type {
             ArtifactType::File => {
                 let mut file_path = dir_path.clone();
                 file_path.push("artifact");
-                tokio::fs::set_permissions(&file_path, PermissionsExt::from_mode(0o600)).await?;
+                tokio::fs::set_permissions(&file_path, PermissionsExt::from_mode(0o400)).await?;
                 let meta = tokio::fs::metadata(&file_path).await?;
                 let file_size = meta.len();
                 let file_hash = hash_file_sha256(&file_path).await?;
@@ -154,7 +154,7 @@ impl Backend for FsBackend {
                 let mut file_path = dir_path.clone();
                 file_path.push("artifact");
                 let res_path = tokio::fs::canonicalize(&file_path).await?;
-                tokio::fs::set_permissions(&res_path, PermissionsExt::from_mode(0o604)).await?;
+                tokio::fs::set_permissions(&res_path, PermissionsExt::from_mode(0o404)).await?;
                 Ok(Url::parse(&format!(
                     "file://{}",
                     res_path.as_os_str().to_string_lossy()

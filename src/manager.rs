@@ -6,6 +6,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use url::Url;
 use uuid::Uuid;
 
+use crate::artifact::ArtifactState;
 use crate::backends::Backends;
 use crate::class::ArtifactClassData;
 use crate::error::Result;
@@ -18,9 +19,9 @@ pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
 #[derive(Clone, Debug)]
 pub enum ManagerMessage {
     NewClass(String),
-    NewArtifactReserve(String, Uuid),
-    RemoveArtifactReserve(String, Uuid),
-    NewArtifact(String, Uuid),
+    NewArtifact(String, Uuid, ArtifactState),
+    ArtifactUpdate(String, Uuid, ArtifactState),
+    RemoveArtifact(String, Uuid, ArtifactState),
 }
 
 pub struct ArtifactManager {
@@ -83,19 +84,13 @@ impl ArtifactManager {
             .await?
             .into_iter()
             .map(ManagerMessage::NewClass);
-        let artifact_reserves = self
-            .storage
-            .get_artifact_reserves()
-            .await?
-            .into_iter()
-            .map(|(class, uuid)| ManagerMessage::NewArtifactReserve(class, uuid));
         let artifacts = self
             .storage
             .get_artifacts()
             .await?
             .into_iter()
-            .map(|(class, uuid)| ManagerMessage::NewArtifact(class, uuid));
-        Ok(classes.chain(artifact_reserves).chain(artifacts).collect())
+            .map(|(class, uuid, state)| ManagerMessage::NewArtifact(class, uuid, state));
+        Ok(classes.chain(artifacts).collect())
     }
 
     pub async fn reserve_artifact(
@@ -123,9 +118,10 @@ impl ArtifactManager {
             Ok(url) => {
                 self.storage.commit_artifact_reserve(artifact_uuid).await?;
                 self.message_broadcast
-                    .send(ManagerMessage::NewArtifactReserve(
+                    .send(ManagerMessage::NewArtifact(
                         class_name,
                         artifact_uuid,
+                        ArtifactState::Reserved,
                     ))
                     .ok();
                 Ok((artifact_uuid, url))
@@ -164,7 +160,11 @@ impl ArtifactManager {
                     .commit_artifact_commit(artifact_uuid, artifact_items)
                     .await?;
                 self.message_broadcast
-                    .send(ManagerMessage::NewArtifact(class_name, artifact_uuid))
+                    .send(ManagerMessage::ArtifactUpdate(
+                        class_name,
+                        artifact_uuid,
+                        ArtifactState::Committed,
+                    ))
                     .ok();
                 Ok(())
             }

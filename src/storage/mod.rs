@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::{
-    artifact::ArtifactItemInfo,
+    artifact::{ArtifactItemInfo, ArtifactState},
     class::{ArtifactClassData, ArtifactType},
     config::storage::{ConfigSqliteStorage, ConfigStorage},
     error::Result,
@@ -26,10 +26,7 @@ pub trait Storage {
     async fn get_classes(&self) -> Result<Vec<String>>;
 
     #[must_use]
-    async fn get_artifact_reserves(&self) -> Result<Vec<(String, Uuid)>>;
-
-    #[must_use]
-    async fn get_artifacts(&self) -> Result<Vec<(String, Uuid)>>;
+    async fn get_artifacts(&self) -> Result<Vec<(String, Uuid, ArtifactState)>>;
 
     #[must_use]
     async fn begin_reserve_artifact(

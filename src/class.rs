@@ -1,5 +1,14 @@
+#[derive(sqlx::Type)]
+#[sqlx(rename_all = "lowercase")]
 pub enum ArtifactType {
     File,
+}
+
+#[derive(Copy, Clone, Debug, sqlx::Type)]
+#[repr(i64)]
+pub enum ArtifactClassState {
+    Uninit = 0,
+    Init = 1,
 }
 
 impl std::str::FromStr for ArtifactType {
