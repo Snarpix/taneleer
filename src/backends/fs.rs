@@ -138,6 +138,30 @@ impl Backend for FsBackend {
             }
         }
     }
+
+    async fn get_artifact(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<Url> {
+        let uuid_str = uuid.to_string();
+        let mut dir_path = self.root_path.clone();
+        dir_path.push(class_name);
+        dir_path.push(uuid_str);
+        match art_type {
+            ArtifactType::File => {
+                let mut file_path = dir_path.clone();
+                file_path.push("artifact");
+                let res_path = tokio::fs::canonicalize(&file_path).await?;
+                tokio::fs::set_permissions(&res_path, PermissionsExt::from_mode(0o604)).await?;
+                Ok(Url::parse(&format!(
+                    "file://{}",
+                    res_path.as_os_str().to_string_lossy()
+                ))?)
+            }
+        }
+    }
 }
 
 async fn hash_file_sha256(file_path: &Path) -> StdResult<Sha256, tokio::io::Error> {

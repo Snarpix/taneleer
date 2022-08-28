@@ -19,6 +19,8 @@ pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
 pub enum ManagerMessage {
     NewClass(String),
     NewArtifactReserve(String, Uuid),
+    RemoveArtifactReserve(String, Uuid),
+    NewArtifact(String, Uuid),
 }
 
 pub struct ArtifactManager {
@@ -87,7 +89,13 @@ impl ArtifactManager {
             .await?
             .into_iter()
             .map(|(class, uuid)| ManagerMessage::NewArtifactReserve(class, uuid));
-        Ok(classes.chain(artifact_reserves).collect())
+        let artifacts = self
+            .storage
+            .get_artifacts()
+            .await?
+            .into_iter()
+            .map(|(class, uuid)| ManagerMessage::NewArtifact(class, uuid));
+        Ok(classes.chain(artifact_reserves).chain(artifacts).collect())
     }
 
     pub async fn reserve_artifact(
@@ -156,10 +164,7 @@ impl ArtifactManager {
                     .commit_artifact_commit(artifact_uuid, artifact_items)
                     .await?;
                 self.message_broadcast
-                    .send(ManagerMessage::NewArtifactReserve(
-                        class_name,
-                        artifact_uuid,
-                    ))
+                    .send(ManagerMessage::NewArtifact(class_name, artifact_uuid))
                     .ok();
                 Ok(())
             }
@@ -172,5 +177,27 @@ impl ArtifactManager {
 
     pub async fn abort_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
         todo!();
+    }
+
+    pub async fn get_artifact(&mut self, artifact_uuid: Uuid) -> Result<(Uuid, String)> {
+        let (artifact_usage_uuid, class_name, backend_name, artifact_type) =
+            self.storage.get_artifact(artifact_uuid).await?;
+        let res = async {
+            let backend = self
+                .backends
+                .get_mut(&backend_name)
+                .ok_or(ManagerError::BackendNotExists)?;
+            backend
+                .get_artifact(&class_name, artifact_type, artifact_uuid)
+                .await
+        }
+        .await;
+        match res {
+            Ok(url) => Ok((artifact_usage_uuid, url.to_string())),
+            Err(e) => {
+                self.storage.fail_artifact_commit(artifact_uuid).await?;
+                Err(e)
+            }
+        }
     }
 }

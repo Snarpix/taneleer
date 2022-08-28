@@ -33,6 +33,14 @@ pub trait Backend {
         art_type: ArtifactType,
         uuid: Uuid,
     ) -> Result<Vec<ArtifactItemInfo>>;
+
+    #[must_use]
+    async fn get_artifact(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<Url>;
 }
 
 pub type Backends = HashMap<String, Box<dyn Backend + Send + Sync>>;

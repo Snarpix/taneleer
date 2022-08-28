@@ -207,6 +207,26 @@ CREATE TABLE artifact_tags(
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+DROP TABLE IF EXISTS artifact_usage;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+CREATE TABLE artifact_usage(
+    artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    uuid BLOB NOT NULL UNIQUE CHECK (LENGTH(uuid) = 16),
+    reserve_time INTEGER NOT NULL
+) STRICT;
+        "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -262,6 +282,13 @@ impl Storage for SqliteStorage {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| e.into())
+    }
+
+    async fn get_artifacts(&self) -> Result<Vec<(String, Uuid)>> {
+        sqlx::query_as::<_, (String, Uuid)>(r#"SELECT AC.name, A.uuid FROM artifacts AS A JOIN artifact_classes AS AC ON A.class_id = AC.id WHERE A.state = 3;"#)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.into())
     }
 
     async fn begin_reserve_artifact(
@@ -506,5 +533,53 @@ VALUES (?1, ?2, ?3, "sha256", ?4);
             return Err(SqliteError::NotFound.into());
         }
         Ok(())
+    }
+
+    async fn get_artifact(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(Uuid, String, String, ArtifactType)> {
+        let mut t = self.pool.begin().await?;
+
+        let (artifact_id, artifact_class_name, backend_name, artifact_type): (
+            i64,
+            String,
+            String,
+            String,
+        ) = sqlx::query_as(
+            r#"
+SELECT A.id, AC.name, AC.backend, AC.artifact_type 
+FROM artifacts AS A 
+JOIN artifact_classes AS AC ON A.class_id = AC.id 
+WHERE A.uuid = ?1 AND A.state = 3;"#,
+        )
+        .bind(artifact_uuid)
+        .fetch_one(&mut t)
+        .await?;
+
+        let artifact_type: ArtifactType = artifact_type
+            .parse()
+            .map_err(|_| SqliteError::InvalidArtifactType)?;
+
+        let artifact_use_uuid = Uuid::new_v4();
+        sqlx::query(
+            r#"
+INSERT INTO artifact_usage(artifact_id, uuid, reserve_time) 
+VALUES (?1, ?2, UNIXEPOCH());
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(artifact_use_uuid)
+        .execute(&mut t)
+        .await?;
+
+        t.commit().await?;
+
+        Ok((
+            artifact_use_uuid,
+            artifact_class_name,
+            backend_name,
+            artifact_type,
+        ))
     }
 }

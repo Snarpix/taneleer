@@ -53,6 +53,7 @@ impl DBusFrontend {
         let cr_clone = cr.clone();
         let class_iface_token;
         let artifact_reserve_iface_token;
+        let artifact_iface_token;
         {
             let mut cr_lock = cr.lock().unwrap();
 
@@ -72,6 +73,7 @@ impl DBusFrontend {
 
             class_iface_token = Self::register_class_iface(&mut cr_lock);
             artifact_reserve_iface_token = Self::register_artifact_reserve_iface(&mut cr_lock);
+            artifact_iface_token = Self::register_artifact_iface(&mut cr_lock);
             let event_stream = {
                 let manager = manager.lock().await;
                 let new_events = manager.subscribe();
@@ -100,6 +102,25 @@ impl DBusFrontend {
                                 &mut cr_lock,
                                 manager.clone(),
                                 &artifact_reserve_iface_token,
+                                class_name,
+                                artifact_uuid,
+                            );
+                        }
+                        ManagerMessage::RemoveArtifactReserve(class_name, artifact_uuid) => {
+                            let mut cr_lock = cr.lock().unwrap();
+                            Self::remove_artifact_reserve(
+                                &mut cr_lock,
+                                manager.clone(),
+                                class_name,
+                                artifact_uuid,
+                            );
+                        }
+                        ManagerMessage::NewArtifact(class_name, artifact_uuid) => {
+                            let mut cr_lock = cr.lock().unwrap();
+                            Self::add_artifact_reserve(
+                                &mut cr_lock,
+                                manager.clone(),
+                                &artifact_iface_token,
                                 class_name,
                                 artifact_uuid,
                             );
@@ -407,6 +428,45 @@ impl DBusFrontend {
         )
     }
 
+    fn register_artifact_iface(cr: &mut Crossroads) -> IfaceToken<Artifact> {
+        cr.register(
+            "com.snarpix.taneleer.Artifact",
+            |b: &mut IfaceBuilder<Artifact>| {
+                b.method_with_cr_async(
+                    "Get",
+                    (),
+                    ("reserve_uuid", "url"),
+                    move |mut ctx, cr, ()| {
+                        let obj = cr
+                            .data_mut::<Artifact>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        async move {
+                            let res = async move {
+                                let Artifact {
+                                    class_name: _class_name,
+                                    uuid,
+                                    manager,
+                                } = obj?;
+                                let mut manager = manager.lock().await;
+                                match manager.get_artifact(uuid).await {
+                                    Ok((reserve_uuid, url)) => Ok((reserve_uuid.to_string(), url)),
+                                    Err(e) => {
+                                        error!("Failed to abort artifact reserve: {:?}", e);
+                                        Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                            .into())
+                                    }
+                                }
+                            }
+                            .await;
+                            ctx.reply(res)
+                        }
+                    },
+                );
+            },
+        )
+    }
+
     fn add_artifact_reserve(
         cr: &mut Crossroads,
         manager: SharedArtifactManager,
@@ -427,6 +487,22 @@ impl DBusFrontend {
                 class_name,
                 manager,
             },
+        );
+    }
+
+    fn remove_artifact_reserve(
+        cr: &mut Crossroads,
+        manager: SharedArtifactManager,
+        class_name: String,
+        artifact_uuid: Uuid,
+    ) {
+        cr.remove::<Artifact>(
+            &dbus::Path::new(format!(
+                "/com/snarpix/taneleer/Artifacts/{}/{}",
+                class_name,
+                artifact_uuid.to_string().replace('-', "_")
+            ))
+            .unwrap(),
         );
     }
 }

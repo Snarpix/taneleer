@@ -29,6 +29,9 @@ pub trait Storage {
     async fn get_artifact_reserves(&self) -> Result<Vec<(String, Uuid)>>;
 
     #[must_use]
+    async fn get_artifacts(&self) -> Result<Vec<(String, Uuid)>>;
+
+    #[must_use]
     async fn begin_reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
@@ -59,6 +62,12 @@ pub trait Storage {
 
     #[must_use]
     async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
+    async fn get_artifact(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(Uuid, String, String, ArtifactType)>;
 }
 
 pub async fn from_config(config: &ConfigStorage) -> Result<Box<dyn Storage + Send + Sync>> {
