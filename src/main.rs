@@ -9,6 +9,7 @@ mod manager;
 mod proxies;
 mod source;
 mod storage;
+mod util;
 
 use std::sync::Arc;
 

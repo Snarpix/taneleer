@@ -13,6 +13,12 @@ backends:
         from: file:///Users/snarpix/Documents/taneleer/storage_root
         to: http://localhost:3000/storage_root
 
+  docker_test:
+    type: docker_registry
+    root_path: docker_root
+    address: "::"
+    port: 5001
+
 storage:
   type: sqlite
   path: storage.db

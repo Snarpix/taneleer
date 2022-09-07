@@ -1,3 +1,4 @@
 /target
 storage.db*
 storage_root
+docker_root

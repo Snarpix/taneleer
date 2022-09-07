@@ -12,15 +12,18 @@ use uuid::Uuid;
 use super::Backend;
 use crate::artifact::ArtifactItemInfo;
 use crate::class::{ArtifactClassData, ArtifactType};
+use crate::config::backend::ConfigFsBackend;
 use crate::error::Result;
 use crate::source::{Hashsum, Sha256};
+use crate::util::hash_file_sha256;
 
 pub struct FsBackend {
     root_path: std::path::PathBuf,
 }
 
 impl FsBackend {
-    pub async fn new(root_path: &std::path::Path) -> Result<FsBackend> {
+    pub async fn new(cfg: &ConfigFsBackend) -> Result<FsBackend> {
+        let root_path = &cfg.root_path;
         let meta = tokio::fs::metadata(root_path).await?;
         if !meta.is_dir() {
             return Err(FsError::RootIsNotDir.into());
@@ -162,22 +165,4 @@ impl Backend for FsBackend {
             }
         }
     }
-}
-
-async fn hash_file_sha256(file_path: &Path) -> StdResult<Sha256, tokio::io::Error> {
-    let mut file = tokio::fs::OpenOptions::new()
-        .read(true)
-        .open(file_path)
-        .await?;
-    let mut buffer = bytes::BytesMut::with_capacity(1 * 1024 * 1024);
-    let mut hasher = sha2::Sha256::new();
-    while file.read_buf(&mut buffer).await? != 0 {
-        let handle = tokio::task::spawn_blocking(move || {
-            hasher.update(&mut buffer);
-            buffer.clear();
-            (hasher, buffer)
-        });
-        (hasher, buffer) = handle.await?;
-    }
-    Ok(*hasher.finalize().as_ref())
 }

@@ -1,3 +1,4 @@
+mod docker_registry;
 mod fs;
 
 use async_trait::async_trait;
@@ -7,7 +8,7 @@ use uuid::Uuid;
 use crate::{
     artifact::ArtifactItemInfo,
     class::{ArtifactClassData, ArtifactType},
-    config::backend::{ConfigBackendTypes, ConfigFsBackend},
+    config::backend::ConfigBackendTypes,
     error::Result,
 };
 
@@ -45,8 +46,9 @@ pub async fn backend_from_config(
     config: &ConfigBackendTypes,
 ) -> Result<Box<dyn Backend + Send + Sync>> {
     match config {
-        ConfigBackendTypes::Fs(ConfigFsBackend { root_path }) => {
-            Ok(Box::new(fs::FsBackend::new(root_path).await?))
-        }
+        ConfigBackendTypes::Fs(cfg) => Ok(Box::new(fs::FsBackend::new(cfg).await?)),
+        ConfigBackendTypes::DockerRegistry(cfg) => Ok(Box::new(
+            docker_registry::DockerRegistryBackend::new(cfg).await?,
+        )),
     }
 }
