@@ -15,6 +15,7 @@ futures = "0.3.21"
 async-trait = "0.1.56"
 tokio = { version = "1.19.2", features = ["full"] }
 tokio-stream = { version = "0.1.9", features = ["sync"] }
+tokio-util = { version = "0.7.3", features = ["io"] }
 sqlx = { version = "0.6.0", features = ["sqlite", "runtime-tokio-native-tls", "uuid"] }
 serde = "1.0.137"
 serde_with = "1.14.0"

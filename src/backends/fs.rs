@@ -40,6 +40,7 @@ impl FsBackend {
 #[derive(Debug)]
 pub enum FsError {
     RootIsNotDir,
+    InvalidArtifactType,
 }
 
 impl std::fmt::Display for FsError {
@@ -76,7 +77,7 @@ impl Backend for FsBackend {
             .mode(0o701)
             .create(&dir_path)
             .await?;
-        let res = async {
+        let res: Result<Url> = async {
             match art_type {
                 ArtifactType::File => {
                     let mut file_path = dir_path.clone();
@@ -99,10 +100,11 @@ impl Backend for FsBackend {
                             if let Err(e) = tokio::fs::remove_file(&file_path).await {
                                 warn!("Failed to cleanup file: {:?}", e);
                             }
-                            Err(e)
+                            Err(e.into())
                         }
                     }
                 }
+                ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
             }
         }
         .await;
@@ -139,6 +141,7 @@ impl Backend for FsBackend {
                     hash: Hashsum::Sha256(file_hash),
                 }])
             }
+            ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
         }
     }
 
@@ -163,6 +166,7 @@ impl Backend for FsBackend {
                     res_path.as_os_str().to_string_lossy()
                 ))?)
             }
+            ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
         }
     }
 }

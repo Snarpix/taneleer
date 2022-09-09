@@ -1,13 +1,14 @@
 mod storage;
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::body::StreamBody;
 use axum::extract::{BodyStream, Path, Query};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +23,7 @@ use futures::StreamExt;
 use sha2::Digest;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
+use tokio_util::io::ReaderStream;
 use url::Url;
 use uuid::Uuid;
 
@@ -91,7 +93,10 @@ impl DockerRegistryBackend {
                 put(Self::finalize_upload),
             )
             .route("/v2/:name/blobs/:reference", head(Self::check_blob))
+            .route("/v2/:name/blobs/:reference", get(Self::get_blob))
             .route("/v2/:name/manifests/:tag", put(Self::put_manifest))
+            .route("/v2/:name/manifests/:tag", head(Self::check_manifest))
+            .route("/v2/:name/manifests/:tag", get(Self::get_manifest))
             .layer(Extension(state.clone()));
         let handle = tokio::spawn(async move {
             axum::Server::bind(&addr)
@@ -388,36 +393,252 @@ impl DockerRegistryBackend {
         }
     }
 
+    async fn get_blob(
+        Extension(state): Extension<Arc<DockerRegistryBackendState>>,
+        Path((name, reference)): Path<(String, String)>,
+    ) -> Response {
+        println!("Get blob: {}, {}", &name, &reference);
+        match Self::get_blob_impl(state, name, reference).await {
+            Ok(r) => r,
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Something went wrong: {}", e),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn get_blob_impl(
+        state: Arc<DockerRegistryBackendState>,
+        name: String,
+        reference: String,
+    ) -> Result<Response> {
+        let mut file_path = state.root_path.clone();
+        file_path.push(&name);
+        file_path.push("blobs");
+        file_path.push(&reference);
+
+        match tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(file) => {
+                let size = file.metadata().await?.len();
+                let stream = ReaderStream::new(file);
+                let body = StreamBody::new(stream);
+                return Ok((
+                    StatusCode::OK,
+                    [
+                        (
+                            DOCKER_DISTRIBUTION_API_VERSION,
+                            API_VERSION.to_str().unwrap().to_owned(),
+                        ),
+                        (header::CONTENT_LENGTH, size.to_string()),
+                        (DOCKER_CONTENT_DIGEST, reference),
+                    ],
+                    body,
+                )
+                    .into_response());
+            }
+            Err(_) => {
+                return Ok((
+                    StatusCode::NOT_FOUND,
+                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+                )
+                    .into_response());
+            }
+        }
+    }
+
     async fn put_manifest(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
         Path((name, tag)): Path<(String, String)>,
         body: String,
-    ) -> impl IntoResponse {
+    ) -> Response {
         println!("Put manifest: {}, {}", &name, &tag);
+        match Self::put_manifest_impl(state, name, tag, body).await {
+            Ok(r) => r,
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Something went wrong: {}", e),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn put_manifest_impl(
+        state: Arc<DockerRegistryBackendState>,
+        name: String,
+        tag: String,
+        body: String,
+    ) -> Result<Response> {
         let mut hasher = sha2::Sha256::new();
         hasher.update(&body);
         let hash = hasher.finalize();
-        std::fs::File::create("manifest")
-            .unwrap()
-            .write_all(body.as_bytes())
-            .unwrap();
         let hex_hash = "sha256:".to_owned() + &hex::encode(hash);
+
+        let mut file_path = state.root_path.clone();
+        file_path.push(&name);
+        file_path.push("manifests");
+        file_path.push(&hex_hash);
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .mode(0o604)
+            .open(&file_path)
+            .await?;
+        let mut cursor = Cursor::new(body);
+        while cursor.has_remaining() {
+            file.write_buf(&mut cursor).await?;
+        }
+
+        let mut tag_path = file_path.clone();
+        tag_path.pop();
+        tag_path.push(&tag);
+
+        tokio::fs::symlink(&hex_hash, tag_path).await?;
+
         println!("Hash: {}", &hex_hash);
-        (
+        Ok((
             StatusCode::CREATED,
             [
                 (
                     DOCKER_DISTRIBUTION_API_VERSION,
                     API_VERSION.to_str().unwrap().to_owned(),
                 ),
-                (
-                    header::LOCATION,
-                    format!("/v2/{}/manifests/{}", name, hex_hash),
-                ),
+                (header::LOCATION, format!("/v2/{}/manifests/{}", name, tag)),
                 (header::CONTENT_LENGTH, 0.to_string()),
                 (DOCKER_CONTENT_DIGEST, hex_hash),
             ],
         )
+            .into_response())
+    }
+
+    async fn check_manifest(
+        Extension(state): Extension<Arc<DockerRegistryBackendState>>,
+        Path((name, tag)): Path<(String, String)>,
+    ) -> Response {
+        println!("Head manifest: {}, {}", &name, &tag);
+        match Self::check_manifest_impl(state, name, tag).await {
+            Ok(r) => r,
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Something went wrong: {}", e),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn check_manifest_impl(
+        state: Arc<DockerRegistryBackendState>,
+        name: String,
+        tag: String,
+    ) -> Result<Response> {
+        let mut file_path = state.root_path.clone();
+        file_path.push(&name);
+        file_path.push("manifests");
+        file_path.push(&tag);
+
+        match tokio::fs::metadata(&file_path).await {
+            Ok(m) => {
+                let path = tokio::fs::read_link(&file_path).await?;
+                return Ok((
+                    StatusCode::OK,
+                    [
+                        (
+                            DOCKER_DISTRIBUTION_API_VERSION,
+                            API_VERSION.to_str().unwrap().to_owned(),
+                        ),
+                        (header::CONTENT_LENGTH, m.len().to_string()),
+                        (
+                            header::CONTENT_TYPE,
+                            "application/vnd.docker.distribution.manifest.v2+json".to_owned(),
+                        ),
+                        (
+                            DOCKER_CONTENT_DIGEST,
+                            path.file_name().unwrap().to_str().unwrap().to_owned(),
+                        ),
+                    ],
+                )
+                    .into_response());
+            }
+            Err(_) => {
+                return Ok((
+                    StatusCode::NOT_FOUND,
+                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    async fn get_manifest(
+        Extension(state): Extension<Arc<DockerRegistryBackendState>>,
+        Path((name, tag)): Path<(String, String)>,
+    ) -> Response {
+        println!("Get manifest: {}, {}", &name, &tag);
+        match Self::get_manifest_impl(state, name, tag).await {
+            Ok(r) => r,
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Something went wrong: {}", e),
+            )
+                .into_response(),
+        }
+    }
+
+    async fn get_manifest_impl(
+        state: Arc<DockerRegistryBackendState>,
+        name: String,
+        tag: String,
+    ) -> Result<Response> {
+        let mut file_path = state.root_path.clone();
+        file_path.push(&name);
+        file_path.push("manifests");
+        file_path.push(&tag);
+
+        match tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(file) => {
+                let size = file.metadata().await?.len();
+                let digest = match tokio::fs::read_link(&file_path).await {
+                    Ok(res) => res.file_name().unwrap().to_str().unwrap().to_owned(),
+                    Err(e) if e.kind() == tokio::io::ErrorKind::InvalidInput => tag,
+                    Err(e) => return Err(e.into()),
+                };
+                let stream = ReaderStream::new(file);
+                let body = StreamBody::new(stream);
+                return Ok((
+                    StatusCode::OK,
+                    [
+                        (
+                            DOCKER_DISTRIBUTION_API_VERSION,
+                            API_VERSION.to_str().unwrap().to_owned(),
+                        ),
+                        (header::CONTENT_LENGTH, size.to_string()),
+                        (
+                            header::CONTENT_TYPE,
+                            "application/vnd.docker.distribution.manifest.v2+json".to_owned(),
+                        ),
+                        (DOCKER_CONTENT_DIGEST, digest),
+                    ],
+                    body,
+                )
+                    .into_response());
+            }
+            Err(_) => {
+                return Ok((
+                    StatusCode::NOT_FOUND,
+                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+                )
+                    .into_response());
+            }
+        }
     }
 }
 
@@ -426,6 +647,7 @@ pub enum DockerError {
     RootIsNotDir,
     NoDigest,
     InvalidDigest,
+    InvalidArtifactType,
 }
 
 impl std::fmt::Display for DockerError {
@@ -438,7 +660,11 @@ impl std::error::Error for DockerError {}
 
 #[async_trait]
 impl Backend for DockerRegistryBackend {
-    async fn create_class(&mut self, name: &str, _data: &ArtifactClassData) -> Result<()> {
+    async fn create_class(&mut self, name: &str, data: &ArtifactClassData) -> Result<()> {
+        if !matches!(data.art_type, ArtifactType::DockerContainer) {
+            return Err(DockerError::InvalidArtifactType.into());
+        }
+
         let mut dir_path = self.state.root_path.clone();
         dir_path.push(name);
         tokio::fs::DirBuilder::new()
@@ -471,6 +697,10 @@ impl Backend for DockerRegistryBackend {
         art_type: ArtifactType,
         uuid: Uuid,
     ) -> Result<Url> {
+        if !matches!(art_type, ArtifactType::DockerContainer) {
+            return Err(DockerError::InvalidArtifactType.into());
+        }
+
         todo!()
     }
 
