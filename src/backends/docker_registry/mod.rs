@@ -1,6 +1,7 @@
 mod storage;
 
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -43,6 +44,9 @@ pub struct DockerRegistryBackend {
 
 struct DockerRegistryBackendState {
     root_path: std::path::PathBuf,
+    hostname: String,
+    port: u16,
+    storage: Box<dyn storage::Storage + Send + Sync>,
 }
 
 const DOCKER_DISTRIBUTION_API_VERSION: header::HeaderName =
@@ -67,9 +71,15 @@ impl DockerRegistryBackend {
         let mut new_perm = meta.permissions();
         new_perm.set_mode(0o701);
         tokio::fs::set_permissions(root_path, new_perm).await?;
+        let mut db_path = root_path.clone();
+        db_path.push("docker.db");
+        let storage = storage::new_storage(&db_path).await?;
 
         let state = Arc::new(DockerRegistryBackendState {
             root_path: root_path.to_owned(),
+            hostname: cfg.hostname.clone(),
+            port: cfg.port,
+            storage,
         });
 
         let addr = SocketAddr::new(cfg.address, cfg.port);
@@ -306,6 +316,7 @@ impl DockerRegistryBackend {
         tokio::fs::set_permissions(&file_path, PermissionsExt::from_mode(0o400)).await?;
 
         let hash = hash_file_sha256(&file_path).await?;
+        let size = tokio::fs::metadata(&file_path).await?.len();
 
         if digest_hash == hash {
             let mut target_path = state.root_path.clone();
@@ -313,6 +324,12 @@ impl DockerRegistryBackend {
             target_path.push("blobs");
             target_path.push(digest);
             tokio::fs::rename(file_path, target_path).await?;
+
+            state
+                .storage
+                .commit_blob(&name, hash, size.try_into().unwrap())
+                .await?;
+
             Ok((
                 StatusCode::CREATED,
                 [
@@ -369,27 +386,23 @@ impl DockerRegistryBackend {
         file_path.push("blobs");
         file_path.push(&reference);
         match tokio::fs::metadata(&file_path).await {
-            Ok(m) => {
-                return Ok((
-                    StatusCode::OK,
-                    [
-                        (
-                            DOCKER_DISTRIBUTION_API_VERSION,
-                            API_VERSION.to_str().unwrap().to_owned(),
-                        ),
-                        (header::CONTENT_LENGTH, m.len().to_string()),
-                        (DOCKER_CONTENT_DIGEST, reference.parse().unwrap()),
-                    ],
-                )
-                    .into_response());
-            }
-            Err(_) => {
-                return Ok((
-                    StatusCode::NOT_FOUND,
-                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-                )
-                    .into_response());
-            }
+            Ok(m) => Ok((
+                StatusCode::OK,
+                [
+                    (
+                        DOCKER_DISTRIBUTION_API_VERSION,
+                        API_VERSION.to_str().unwrap().to_owned(),
+                    ),
+                    (header::CONTENT_LENGTH, m.len().to_string()),
+                    (DOCKER_CONTENT_DIGEST, reference.parse().unwrap()),
+                ],
+            )
+                .into_response()),
+            Err(_) => Ok((
+                StatusCode::NOT_FOUND,
+                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+            )
+                .into_response()),
         }
     }
 
@@ -473,10 +486,61 @@ impl DockerRegistryBackend {
         tag: String,
         body: String,
     ) -> Result<Response> {
+        let artifact_uuid = Uuid::from_str(&tag)?;
+
         let mut hasher = sha2::Sha256::new();
         hasher.update(&body);
-        let hash = hasher.finalize();
+        let hash = hasher.finalize().try_into()?;
         let hex_hash = "sha256:".to_owned() + &hex::encode(hash);
+
+        // TODO: Error processing
+        let parsed_mainfest: serde_json::Value = serde_json::from_str(&body)?;
+
+        let media_type = parsed_mainfest
+            .get("mediaType")
+            .and_then(|v| v.as_str().clone())
+            .ok_or(DockerError::InvalidDigest)?;
+
+        let mut layers = Vec::<Sha256>::new();
+        for l in parsed_mainfest
+            .get("layers")
+            .and_then(|v| v.as_array())
+            .map(|v| {
+                v.iter().map(|l| {
+                    l.get("digest")
+                        .and_then(|v| v.as_str())
+                        .and_then(|v| v.strip_prefix("sha256:"))
+                        .and_then(|v| hex::decode(v).ok())
+                })
+            })
+            .ok_or(DockerError::InvalidDigest)?
+        {
+            layers.push(
+                l.and_then(|v| v.try_into().ok())
+                    .ok_or(DockerError::InvalidDigest)?,
+            );
+        }
+
+        let config_digest: Sha256 = parsed_mainfest
+            .get("config")
+            .and_then(|v| v.get("digest"))
+            .and_then(|v| v.as_str())
+            .and_then(|v| v.strip_prefix("sha256:"))
+            .and_then(|v| hex::decode(v).ok())
+            .and_then(|v| v.try_into().ok())
+            .ok_or(DockerError::InvalidDigest)?;
+        layers.push(config_digest);
+
+        state
+            .storage
+            .commit_artifact(
+                artifact_uuid,
+                hash,
+                body.len().try_into().unwrap(),
+                media_type,
+                layers,
+            )
+            .await?;
 
         let mut file_path = state.root_path.clone();
         file_path.push(&name);
@@ -688,6 +752,8 @@ impl Backend for DockerRegistryBackend {
             .mode(0o701)
             .create(&dir_path)
             .await?;
+
+        self.state.storage.create_class(name).await?;
         Ok(())
     }
 
@@ -701,7 +767,18 @@ impl Backend for DockerRegistryBackend {
             return Err(DockerError::InvalidArtifactType.into());
         }
 
-        todo!()
+        self.state
+            .storage
+            .create_artifact_reserve(uuid, class_name)
+            .await?;
+        Ok(Url::parse(&format!(
+            "{}:{}/{}:{}",
+            self.state.hostname,
+            self.state.port,
+            class_name,
+            uuid.to_string()
+        ))
+        .unwrap())
     }
 
     async fn commit_artifact(
@@ -710,7 +787,14 @@ impl Backend for DockerRegistryBackend {
         art_type: ArtifactType,
         uuid: Uuid,
     ) -> Result<Vec<ArtifactItemInfo>> {
-        todo!()
+        if !matches!(art_type, ArtifactType::DockerContainer) {
+            return Err(DockerError::InvalidArtifactType.into());
+        }
+
+        self.state
+            .storage
+            .get_artifact_items(class_name, uuid)
+            .await
     }
 
     async fn get_artifact(
@@ -719,6 +803,18 @@ impl Backend for DockerRegistryBackend {
         art_type: ArtifactType,
         uuid: Uuid,
     ) -> Result<Url> {
-        todo!()
+        if !matches!(art_type, ArtifactType::DockerContainer) {
+            return Err(DockerError::InvalidArtifactType.into());
+        }
+
+        // TODO: Maybe check existence
+        Ok(Url::parse(&format!(
+            "{}:{}/{}:{}",
+            self.state.hostname,
+            self.state.port,
+            class_name,
+            uuid.to_string()
+        ))
+        .unwrap())
     }
 }

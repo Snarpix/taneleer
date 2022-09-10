@@ -1,11 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::result::Result as StdResult;
 
 use async_trait::async_trait;
 use log::warn;
-use sha2::Digest;
-use tokio::io::AsyncReadExt;
 use url::Url;
 use uuid::Uuid;
 
@@ -14,7 +10,7 @@ use crate::artifact::ArtifactItemInfo;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::config::backend::ConfigFsBackend;
 use crate::error::Result;
-use crate::source::{Hashsum, Sha256};
+use crate::source::Hashsum;
 use crate::util::hash_file_sha256;
 
 pub struct FsBackend {

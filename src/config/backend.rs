@@ -19,6 +19,7 @@ pub struct ConfigFsBackend {
 pub struct ConfigDockerRegistry {
     pub root_path: std::path::PathBuf,
     pub address: std::net::IpAddr,
+    pub hostname: String,
     pub port: u16,
 }
 

@@ -17,6 +17,7 @@ backends:
     type: docker_registry
     root_path: docker_root
     address: "::"
+    hostname: host.docker.internal
     port: 5001
 
 storage:
