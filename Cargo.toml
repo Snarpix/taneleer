@@ -8,27 +8,28 @@ repository = "https://github.com/Snarpix/taneleer"
 description = "Build artifacts storage service"
 
 [dependencies]
-dbus = "0.9.5"
+dbus = "0.9.6"
 dbus-crossroads = "0.5.1"
 dbus-tokio = "0.7.5"
-futures = "0.3.21"
-async-trait = "0.1.56"
-tokio = { version = "1.19.2", features = ["full"] }
+futures = "0.3.24"
+async-trait = "0.1.57"
+tokio = { version = "1.21.0", features = ["full"] }
 tokio-stream = { version = "0.1.9", features = ["sync"] }
-tokio-util = { version = "0.7.3", features = ["io"] }
-sqlx = { version = "0.6.0", features = ["sqlite", "runtime-tokio-native-tls", "uuid"] }
-serde = "1.0.137"
-serde_with = "1.14.0"
-serde_derive = "1.0.137"
-serde_yaml = "0.8.24"
+tokio-util = { version = "0.7.4", features = ["io"] }
+sqlx = { version = "0.6.1", features = ["sqlite", "runtime-tokio-native-tls", "uuid"] }
+serde = "1.0.144"
+serde_with = "2.0.1"
+serde_derive = "1.0.144"
+serde_yaml = "0.9.11"
 serde_json = "1.0.85"
 uuid = { version = "1.1.2", features = ["v4", "fast-rng", "macro-diagnostics"] }
 hex = "0.4.3"
-url = "2.2.2"
+url = "2.3.1"
 log = { version = "0.4.17", features = ["max_level_trace", "release_max_level_info"] }
 env_logger = "0.9.0"
-sha2 = "0.10.2"
-bytes = "1.1.0"
+sha2 = "0.10.5"
+bytes = "1.2.1"
 axum = { version = "0.6.0-rc.1", features = ["headers"] }
 regex = "1.6.0"
 lazy_static = "1.4.0"
+libc = "0.2.132"
