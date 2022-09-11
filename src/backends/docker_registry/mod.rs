@@ -21,6 +21,8 @@ use axum::{
 };
 use bytes::Buf;
 use futures::StreamExt;
+use libc::ENOENT;
+use log::info;
 use sha2::Digest;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
@@ -323,7 +325,22 @@ impl DockerRegistryBackend {
             target_path.push(&name);
             target_path.push("blobs");
             target_path.push(digest);
-            tokio::fs::rename(file_path, target_path).await?;
+            let exists = match tokio::fs::metadata(&target_path).await {
+                Ok(_) => true,
+                Err(e) => {
+                    if let Some(ENOENT) = e.raw_os_error() {
+                        false
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            };
+            if exists {
+                info!("Blob already exists: {}", digest);
+                tokio::fs::remove_file(file_path).await?;
+            } else {
+                tokio::fs::rename(file_path, target_path).await?;
+            }
 
             state
                 .storage
@@ -542,26 +559,49 @@ impl DockerRegistryBackend {
             )
             .await?;
 
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("manifests");
-        file_path.push(&hex_hash);
+        let mut target_path = state.root_path.clone();
+        target_path.push(&name);
+        target_path.push("manifests");
+        target_path.push(&hex_hash);
 
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .mode(0o604)
-            .open(&file_path)
-            .await?;
-        let mut cursor = Cursor::new(body);
-        while cursor.has_remaining() {
-            file.write_buf(&mut cursor).await?;
+        let exists = match tokio::fs::metadata(&target_path).await {
+            Ok(_) => true,
+            Err(e) => {
+                if let Some(ENOENT) = e.raw_os_error() {
+                    false
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
+        if exists {
+            info!("Manifest already exists: {}", hex_hash);
+        } else {
+            let mut upload_path = state.root_path.clone();
+            upload_path.push(&name);
+            upload_path.push("upload");
+            upload_path.push(&hex_hash);
+
+            {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o604)
+                    .open(&upload_path)
+                    .await?;
+                let mut cursor = Cursor::new(body);
+                while cursor.has_remaining() {
+                    file.write_buf(&mut cursor).await?;
+                }
+            }
+            tokio::fs::rename(upload_path, &target_path).await?;
         }
 
-        let mut tag_path = file_path.clone();
+        let mut tag_path = target_path.clone();
         tag_path.pop();
         tag_path.push(&tag);
 
+        // Tag should be unique
         tokio::fs::symlink(&hex_hash, tag_path).await?;
 
         println!("Hash: {}", &hex_hash);
