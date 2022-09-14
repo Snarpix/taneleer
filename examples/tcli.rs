@@ -162,8 +162,9 @@ fn do_source_cmd(conn: &Connection, cmd: &SourceCommands) {
             for ((artifact_uuid, source_name), (source_type, source_meta)) in sources {
                 let meta = match source_type.as_str() {
                     "artifact" => {
-                        let source_meta: &String = source_meta.as_any().downcast_ref().unwrap();
-                        source_meta.clone()
+                        let mut arg_iter = source_meta.0.as_iter().unwrap();
+                        let uuid = arg_iter.next().and_then(|i| i.as_str()).unwrap();
+                        uuid.to_owned()
                     }
                     "git" => {
                         let mut arg_iter = source_meta.0.as_iter().unwrap();
