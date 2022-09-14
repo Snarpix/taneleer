@@ -1,14 +1,35 @@
 use sqlx::{sqlite::SqliteRow, Row};
+use uuid::Uuid;
 
-use crate::source::Hashsum;
+use crate::{class::ArtifactType, source::Hashsum};
 
-#[derive(Copy, Clone, Debug, sqlx::Type)]
+#[derive(Copy, Clone, Debug, sqlx::Type, strum::EnumString, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 #[repr(i64)]
 pub enum ArtifactState {
     Created = 0,
     Reserved = 1,
     Committed = 2,
     Deleted = 3,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct ArtifactData {
+    pub class_name: String,
+    pub art_type: ArtifactType,
+    pub reserve_time: i64,
+    pub commit_time: Option<i64>,
+    pub use_count: i64,
+    pub state: ArtifactState,
+    pub next_state: Option<ArtifactState>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct Artifact {
+    pub uuid: Uuid,
+    #[sqlx(flatten)]
+    pub data: ArtifactData,
 }
 
 pub struct ArtifactItemInfo {

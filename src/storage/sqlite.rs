@@ -1,18 +1,22 @@
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::Storage;
-use crate::artifact::{ArtifactItemInfo, ArtifactState};
+use crate::artifact::{Artifact, ArtifactData, ArtifactItemInfo, ArtifactState};
 use crate::class::{ArtifactClassData, ArtifactClassState, ArtifactType};
 use crate::error::Result;
-use crate::source::{Hashsum, Source};
+use crate::source::{Hashsum, Source, SourceType};
 
 #[derive(Debug)]
 pub enum SqliteError {
     InvalidVersion,
     NotFound,
     InvalidArtifactType,
+    InvalidExternalSourceType,
+    InvalidHashType,
 }
 
 impl std::fmt::Display for SqliteError {
@@ -284,6 +288,35 @@ impl Storage for SqliteStorage {
             .map_err(|e| e.into())
     }
 
+    async fn get_classes_info(
+        &self,
+    ) -> Result<Vec<(String, ArtifactClassData, ArtifactClassState)>> {
+        Ok(
+            sqlx::query_as(r#"SELECT name, backend, artifact_type, state FROM artifact_classes;"#)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(
+                    |(name, backend_name, art_type, state): (
+                        String,
+                        String,
+                        ArtifactType,
+                        ArtifactClassState,
+                    )| {
+                        (
+                            name,
+                            ArtifactClassData {
+                                backend_name,
+                                art_type,
+                            },
+                            state,
+                        )
+                    },
+                )
+                .collect(),
+        )
+    }
+
     async fn get_artifacts(&self) -> Result<Vec<(String, Uuid, ArtifactState)>> {
         sqlx::query_as::<_, (String, Uuid, ArtifactState)>(r#"SELECT AC.name, A.uuid, A.state FROM artifacts AS A JOIN artifact_classes AS AC ON A.class_id = AC.id;"#)
         .fetch_all(&self.pool)
@@ -291,11 +324,82 @@ impl Storage for SqliteStorage {
         .map_err(|e| e.into())
     }
 
+    async fn get_artifacts_info(&self) -> Result<Vec<Artifact>> {
+        sqlx::query_as::<_, Artifact>(
+            r#"
+SELECT A.uuid AS uuid, AC.name AS class_name, AC.artifact_type AS art_type,
+    reserve_time, commit_time, use_count, A.state AS state, next_state, error
+    FROM artifacts AS A JOIN artifact_classes AS AC ON A.class_id = AC.id;
+        "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.into())
+    }
+
+    async fn get_sources(&self) -> Result<Vec<(Uuid, Source)>> {
+        let mut res = Vec::new();
+        for (artifact_uuid, name, typ, url, hash_type, hash) in
+            sqlx::query_as::<_, (Uuid, String, String, String, String, Vec<u8>)>(
+                r#"
+SELECT A.uuid, name, type, url, hash_type, hash
+    FROM external_sources AS ES JOIN artifacts AS A ON ES.artifact_id = A.id;
+        "#,
+            )
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+        {
+            let source = match typ.as_str() {
+                "url" => SourceType::Url {
+                    url,
+                    hash: Hashsum::from_split(&hash_type, &hash)?,
+                },
+                "git" => {
+                    if hash_type != "sha1" {
+                        return Err(SqliteError::InvalidHashType.into());
+                    }
+                    SourceType::Git {
+                        repo: url,
+                        commit: hash.try_into().map_err(|_| SqliteError::InvalidHashType)?,
+                    }
+                }
+                _ => {
+                    return Err(SqliteError::InvalidExternalSourceType.into());
+                }
+            };
+            res.push((artifact_uuid, Source { name, source }));
+        }
+
+        for (artifact_uuid, name, target_uuid) in sqlx::query_as::<_, (Uuid, String, Uuid)>(
+            r#"
+SELECT A.uuid, name, TA.uuid
+    FROM internal_sources AS ISRC
+    JOIN artifacts AS A ON ISRC.artifact_id = A.id
+    JOIN artifacts AS TA ON ISRC.source_artifact_id = TA.id;
+                "#,
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        {
+            res.push((
+                artifact_uuid,
+                Source {
+                    name,
+                    source: SourceType::Artifact { uuid: target_uuid },
+                },
+            ));
+        }
+
+        Ok(res)
+    }
+
     async fn begin_reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
-        sources: &[(String, Source)],
+        sources: &[Source],
         tags: &[(String, Option<String>)],
     ) -> Result<(String, ArtifactType)> {
         let mut t = self.pool.begin().await?;
@@ -320,9 +424,9 @@ impl Storage for SqliteStorage {
         .execute(&mut t)
         .await?;
 
-        for (source_name, source_meta) in sources {
-            match source_meta {
-                Source::Artifact { uuid } => {
+        for Source { name, source } in sources {
+            match source {
+                SourceType::Artifact { uuid } => {
                     sqlx::query(
                         r#"
 INSERT INTO internal_sources(artifact_id, name, source_artifact_id) 
@@ -330,12 +434,12 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, (SELECT id FROM artifact
                     "#,
                     )
                     .bind(artifact_uuid.as_bytes().as_ref())
-                    .bind(source_name)
+                    .bind(name)
                     .bind(uuid.as_bytes().as_ref())
                     .execute(&mut t)
                     .await?;
                 }
-                Source::Url { url, hash } => match hash {
+                SourceType::Url { url, hash } => match hash {
                     Hashsum::Sha256(hash) => {
                         sqlx::query(
                             r#"
@@ -344,14 +448,14 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "url", ?3, "sha256", ?4)
                             "#,
                         )
                         .bind(artifact_uuid.as_bytes().as_ref())
-                        .bind(source_name)
+                        .bind(name)
                         .bind(url)
                         .bind(hash.as_ref())
                         .execute(&mut t)
                         .await?;
                     }
                 },
-                Source::Git { repo, commit } => {
+                SourceType::Git { repo, commit } => {
                     sqlx::query(
                         r#"
 INSERT INTO external_sources(artifact_id, name, type, url, hash_type, hash) 
@@ -359,7 +463,7 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "git", ?3, "sha1", ?4);
                     "#,
                     )
                     .bind(artifact_uuid.as_bytes().as_ref())
-                    .bind(source_name)
+                    .bind(name)
                     .bind(repo)
                     .bind(commit.as_ref())
                     .execute(&mut t)

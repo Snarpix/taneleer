@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use dbus::arg::{RefArg, Variant};
+use dbus::arg::{Append, Dict, RefArg, Variant};
 use dbus::channel::{BusType, MatchingReceiver};
 use dbus::message::MatchRule;
 use dbus::nonblock::SyncConnection;
@@ -20,7 +20,7 @@ use crate::artifact::ArtifactState;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::manager::{ArtifactManager, ManagerMessage, SharedArtifactManager};
-use crate::source::{Hashsum, Sha1, Sha256, Source};
+use crate::source::{Hashsum, Sha1, Sha256, Source, SourceType};
 
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
@@ -163,6 +163,156 @@ impl DBusFrontend {
                         }
                     },
                 );
+                b.method_with_cr_async(
+                    "GetClasses",
+                    (),
+                    ("artifact_classes",),
+                    move |mut ctx, cr, ()| {
+                        let obj = cr
+                            .data_mut::<SharedArtifactManager>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        async move {
+                            let res: StdResult<_, MethodErr> = async move {
+                                match obj?.lock().await.get_artifact_classes().await {
+                                    Ok(r) => Ok(r),
+                                    Err(e) => {
+                                        Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                            .into())
+                                    }
+                                }
+                            }
+                            .await;
+                            ctx.reply(res.map(|r| {
+                                (Dict::new(
+                                    r.into_iter()
+                                        .map(|(name, data, state)| {
+                                            (
+                                                name,
+                                                (
+                                                    data.backend_name,
+                                                    data.art_type.to_string(),
+                                                    state.to_string(),
+                                                ),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>(),
+                                ),)
+                            }))
+                        }
+                    },
+                );
+                b.method_with_cr_async(
+                    "GetArtifacts",
+                    (),
+                    ("artifacts",),
+                    move |mut ctx, cr, ()| {
+                        let obj = cr
+                            .data_mut::<SharedArtifactManager>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        async move {
+                            let res: StdResult<_, MethodErr> = async move {
+                                match obj?.lock().await.get_artifacts_info().await {
+                                    Ok(r) => Ok(r),
+                                    Err(e) => {
+                                        dbg!(e);
+                                        Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                            .into())
+                                    }
+                                }
+                            }
+                            .await;
+                            ctx.reply(res.map(|r| {
+                                (Dict::new(
+                                    r.into_iter()
+                                        .map(|info| {
+                                            (
+                                                info.uuid.to_string(),
+                                                (
+                                                    info.data.class_name,
+                                                    info.data.art_type.to_string(),
+                                                    info.data.reserve_time,
+                                                    info.data.commit_time.unwrap_or(0),
+                                                    info.data.use_count,
+                                                    <&str>::from(info.data.state).to_owned(),
+                                                    info.data
+                                                        .next_state
+                                                        .map(|v| <&str>::from(v))
+                                                        .unwrap_or("")
+                                                        .to_owned(),
+                                                    info.data
+                                                        .error
+                                                        .unwrap_or_else(|| "".to_string()),
+                                                ),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>(),
+                                ),)
+                            }))
+                        }
+                    },
+                );
+                b.method_with_cr_async("GetSources", (), ("sources",), move |mut ctx, cr, ()| {
+                    let obj = cr
+                        .data_mut::<SharedArtifactManager>(ctx.path())
+                        .cloned()
+                        .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                    async move {
+                        let res: StdResult<_, MethodErr> = async move {
+                            match obj?.lock().await.get_sources().await {
+                                Ok(r) => Ok(r),
+                                Err(e) => {
+                                    dbg!(e);
+                                    Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                        .into())
+                                }
+                            }
+                        }
+                        .await;
+                        ctx.reply(res.map(|r| {
+                            (
+                                r.into_iter()
+                                    .map(
+                                        |(uuid, Source { name, source })| -> (
+                                            (String, String),
+                                            (&str, Variant<Box<dyn RefArg>>),
+                                        ) {
+                                            (
+                                                (uuid.to_string(), name),
+                                                match source {
+                                                    SourceType::Artifact { uuid } => (
+                                                        "artifact",
+                                                        Variant(Box::new(uuid.to_string())),
+                                                    ),
+                                                    SourceType::Git { repo, commit } => (
+                                                        "git",
+                                                        Variant(Box::new((
+                                                            repo,
+                                                            hex::encode(&commit),
+                                                        ))),
+                                                    ),
+                                                    SourceType::Url { url, hash } => {
+                                                        let Hashsum::Sha256(s) = hash;
+                                                        (
+                                                            "url",
+                                                            Variant(Box::new((
+                                                                url,
+                                                                hex::encode(&s),
+                                                            ))),
+                                                        )
+                                                    }
+                                                },
+                                            )
+                                        },
+                                    )
+                                    .collect::<Vec<_>>(),
+                            )
+                        }))
+                    }
+                });
+
+                //HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
                 b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
                     println!("FindArtifactByUuid");
                     Ok(())
@@ -362,7 +512,7 @@ impl DBusFrontendInner {
                                             let mut sha256_hash: Sha256 = Default::default();
                                             hex::decode_to_slice(hash, &mut sha256_hash)
                                                 .map_err(|_| MethodErr::invalid_arg(&hash))?;
-                                            Source::Url {
+                                            SourceType::Url {
                                                 url: url.to_owned(),
                                                 hash: Hashsum::Sha256(sha256_hash),
                                             }
@@ -390,7 +540,7 @@ impl DBusFrontendInner {
                                             let mut sha1_hash: Sha1 = Default::default();
                                             hex::decode_to_slice(commit, &mut sha1_hash)
                                                 .map_err(|_| MethodErr::invalid_arg(&commit))?;
-                                            Source::Git {
+                                            SourceType::Git {
                                                 repo: repo.to_owned(),
                                                 commit: sha1_hash,
                                             }
@@ -411,13 +561,16 @@ impl DBusFrontendInner {
                                             }
                                             let uuid = Uuid::parse_str(uuid)
                                                 .map_err(|_| MethodErr::invalid_arg(&uuid))?;
-                                            Source::Artifact { uuid }
+                                            SourceType::Artifact { uuid }
                                         }
                                         _ => {
                                             return Err(MethodErr::invalid_arg(&source_type));
                                         }
                                     };
-                                    sources_conv.push((source_name, meta));
+                                    sources_conv.push(Source {
+                                        name: source_name,
+                                        source: meta,
+                                    });
                                 }
                                 let tags = tags
                                     .into_iter()

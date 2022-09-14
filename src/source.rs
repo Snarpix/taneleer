@@ -34,8 +34,13 @@ impl Hashsum {
     }
 }
 
-pub enum Source {
+pub enum SourceType {
     Url { url: String, hash: Hashsum },
     Git { repo: String, commit: Sha1 },
     Artifact { uuid: Uuid },
+}
+
+pub struct Source {
+    pub name: String,
+    pub source: SourceType,
 }

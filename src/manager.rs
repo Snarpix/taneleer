@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use log::warn;
@@ -7,9 +8,9 @@ use tokio_stream::wrappers::BroadcastStream;
 use url::Url;
 use uuid::Uuid;
 
-use crate::artifact::ArtifactState;
+use crate::artifact::{Artifact, ArtifactState};
 use crate::backend_pack::Backends;
-use crate::class::ArtifactClassData;
+use crate::class::{ArtifactClassData, ArtifactClassState};
 use crate::error::Result;
 use crate::source::Source;
 use crate::storage::Storage;
@@ -26,7 +27,7 @@ pub enum ManagerMessage {
 }
 
 pub struct ArtifactManager {
-    storage: Box<dyn Storage + Send>,
+    storage: Box<dyn Storage + Send + Sync>,
     backends: Backends,
     message_broadcast: BSender<ManagerMessage>,
 }
@@ -46,7 +47,7 @@ impl std::fmt::Display for ManagerError {
 impl std::error::Error for ManagerError {}
 
 impl ArtifactManager {
-    pub fn new(storage: Box<dyn Storage + Send>, backends: Backends) -> ArtifactManager {
+    pub fn new(storage: Box<dyn Storage + Send + Sync>, backends: Backends) -> ArtifactManager {
         let (message_broadcast, _) = broadcast::channel(16);
         ArtifactManager {
             storage,
@@ -95,10 +96,24 @@ impl ArtifactManager {
         Ok(classes.chain(artifacts).collect())
     }
 
+    pub async fn get_artifact_classes(
+        &self,
+    ) -> Result<Vec<(String, ArtifactClassData, ArtifactClassState)>> {
+        self.storage.get_classes_info().await
+    }
+
+    pub async fn get_artifacts_info(&self) -> Result<Vec<Artifact>> {
+        self.storage.get_artifacts_info().await
+    }
+
+    pub async fn get_sources(&self) -> Result<Vec<(Uuid, Source)>> {
+        self.storage.get_sources().await
+    }
+
     pub async fn reserve_artifact(
         &mut self,
         class_name: String,
-        sources: Vec<(String, Source)>,
+        sources: Vec<Source>,
         tags: Vec<(String, Option<String>)>,
         proxy: Option<String>,
     ) -> Result<(Uuid, Url)> {
