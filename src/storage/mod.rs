@@ -4,11 +4,13 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::{
-    artifact::{Artifact, ArtifactItemInfo, ArtifactState},
+    artifact::{Artifact, ArtifactItem, ArtifactItemInfo, ArtifactState},
     class::{ArtifactClassData, ArtifactClassState, ArtifactType},
     config::storage::{ConfigSqliteStorage, ConfigStorage},
     error::Result,
     source::Source,
+    tag::{ArtifactTag, Tag},
+    usage::ArtifactUsage,
 };
 
 #[async_trait]
@@ -40,12 +42,21 @@ pub trait Storage {
     async fn get_sources(&self) -> Result<Vec<(Uuid, Source)>>;
 
     #[must_use]
+    async fn get_items(&self) -> Result<Vec<ArtifactItem>>;
+
+    #[must_use]
+    async fn get_tags(&self) -> Result<Vec<ArtifactTag>>;
+
+    #[must_use]
+    async fn get_usages(&self) -> Result<Vec<ArtifactUsage>>;
+
+    #[must_use]
     async fn begin_reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
         sources: &[Source],
-        tags: &[(String, Option<String>)],
+        tags: &[Tag],
     ) -> Result<(String, ArtifactType)>;
 
     #[must_use]
@@ -58,7 +69,7 @@ pub trait Storage {
     async fn begin_artifact_commit(
         &mut self,
         artifact_uuid: Uuid,
-        tags: &[(String, Option<String>)],
+        tags: &[Tag],
     ) -> Result<(String, String, ArtifactType)>;
 
     #[must_use]

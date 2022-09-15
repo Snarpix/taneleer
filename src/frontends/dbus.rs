@@ -16,11 +16,13 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::Frontend;
-use crate::artifact::ArtifactState;
+use crate::artifact::{ArtifactItem, ArtifactItemInfo, ArtifactState};
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::manager::{ArtifactManager, ManagerMessage, SharedArtifactManager};
 use crate::source::{Hashsum, Sha1, Sha256, Source, SourceType};
+use crate::tag::{ArtifactTag, Tag};
+use crate::usage::ArtifactUsage;
 
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
@@ -215,8 +217,7 @@ impl DBusFrontend {
                             let res: StdResult<_, MethodErr> = async move {
                                 match obj?.lock().await.get_artifacts_info().await {
                                     Ok(r) => Ok(r),
-                                    Err(e) => {
-                                        dbg!(e);
+                                    Err(_) => {
                                         Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
                                             .into())
                                     }
@@ -262,8 +263,7 @@ impl DBusFrontend {
                         let res: StdResult<_, MethodErr> = async move {
                             match obj?.lock().await.get_sources().await {
                                 Ok(r) => Ok(r),
-                                Err(e) => {
-                                    dbg!(e);
+                                Err(_) => {
                                     Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
                                         .into())
                                 }
@@ -308,6 +308,104 @@ impl DBusFrontend {
                                     )
                                     .collect::<Vec<_>>(),
                             )
+                        }))
+                    }
+                });
+                b.method_with_cr_async("GetItems", (), ("items",), |mut ctx, cr, ()| {
+                    let obj = cr
+                        .data_mut::<SharedArtifactManager>(ctx.path())
+                        .cloned()
+                        .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                    async move {
+                        let res: StdResult<_, MethodErr> = async move {
+                            match obj?.lock().await.get_items().await {
+                                Ok(r) => Ok(r),
+                                Err(_) => {
+                                    Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                        .into())
+                                }
+                            }
+                        }
+                        .await;
+                        ctx.reply(res.map(|r| {
+                            (r.into_iter()
+                                .map(
+                                    |ArtifactItem {
+                                         uuid,
+                                         info: ArtifactItemInfo { id, size, hash },
+                                     }| {
+                                        let Hashsum::Sha256(s) = hash;
+                                        ((uuid.to_string(), id), (size, hex::encode(&s)))
+                                    },
+                                )
+                                .collect::<Vec<_>>(),)
+                        }))
+                    }
+                });
+                b.method_with_cr_async("GetTags", (), ("tags",), |mut ctx, cr, ()| {
+                    let obj = cr
+                        .data_mut::<SharedArtifactManager>(ctx.path())
+                        .cloned()
+                        .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                    async move {
+                        let res: StdResult<_, MethodErr> = async move {
+                            match obj?.lock().await.get_tags().await {
+                                Ok(r) => Ok(r),
+                                Err(_) => {
+                                    Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                        .into())
+                                }
+                            }
+                        }
+                        .await;
+                        ctx.reply(res.map(|r| {
+                            (r.into_iter()
+                                .map(
+                                    |ArtifactTag {
+                                         artifact_uuid,
+                                         tag: Tag { name, value },
+                                     }| {
+                                        (
+                                            (name, value.unwrap_or_default()),
+                                            artifact_uuid.to_string(),
+                                        )
+                                    },
+                                )
+                                .collect::<Vec<_>>(),)
+                        }))
+                    }
+                });
+                b.method_with_cr_async("GetUsages", (), ("usages",), |mut ctx, cr, ()| {
+                    let obj = cr
+                        .data_mut::<SharedArtifactManager>(ctx.path())
+                        .cloned()
+                        .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                    async move {
+                        let res: StdResult<_, MethodErr> = async move {
+                            match obj?.lock().await.get_usages().await {
+                                Ok(r) => Ok(r),
+                                Err(_) => {
+                                    Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                        .into())
+                                }
+                            }
+                        }
+                        .await;
+                        ctx.reply(res.map(|r| {
+                            (r.into_iter()
+                                .map(
+                                    |ArtifactUsage {
+                                         uuid,
+                                         artifact_uuid,
+                                         reserve_time,
+                                     }| {
+                                        (
+                                            uuid.to_string(),
+                                            (artifact_uuid.to_string(), reserve_time),
+                                        )
+                                    },
+                                )
+                                .collect::<Vec<_>>(),)
                         }))
                     }
                 });
@@ -577,7 +675,7 @@ impl DBusFrontendInner {
                                     .map(|(name, value)| {
                                         let value =
                                             if value.is_empty() { None } else { Some(value) };
-                                        (name, value)
+                                        Tag { name, value }
                                     })
                                     .collect();
 
@@ -630,7 +728,7 @@ impl DBusFrontendInner {
                                     .map(|(name, value)| {
                                         let value =
                                             if value.is_empty() { None } else { Some(value) };
-                                        (name, value)
+                                        Tag { name, value }
                                     })
                                     .collect();
                                 let mut manager = manager.lock().await;

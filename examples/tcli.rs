@@ -45,6 +45,18 @@ enum MainCommands {
         #[clap(subcommand)]
         cmd: SourceCommands,
     },
+    Item {
+        #[clap(subcommand)]
+        cmd: ItemCommands,
+    },
+    Tag {
+        #[clap(subcommand)]
+        cmd: TagCommands,
+    },
+    Usage {
+        #[clap(subcommand)]
+        cmd: UsageCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -194,6 +206,102 @@ fn do_source_cmd(conn: &Connection, cmd: &SourceCommands) {
     }
 }
 
+#[derive(Subcommand)]
+enum ItemCommands {
+    List,
+}
+
+fn do_item_cmd(conn: &Connection, cmd: &ItemCommands) {
+    match cmd {
+        ItemCommands::List => {
+            let (items,): (Vec<((String, String), (u64, String))>,) =
+                get_artifact_manager_proxy(conn)
+                    .method_call("com.snarpix.taneleer.ArtifactManager", "GetItems", ())
+                    .unwrap();
+
+            let mut table = create_table();
+            table.set_header(vec![
+                Cell::new("Artifact uuid"),
+                Cell::new("Item id"),
+                Cell::new("Item size"),
+                Cell::new("Item hash"),
+            ]);
+
+            for ((artifact_uuid, item_id), (item_size, item_hash)) in items {
+                table.add_row(vec![
+                    Cell::new(artifact_uuid),
+                    Cell::new(item_id),
+                    Cell::new(item_size),
+                    Cell::new(item_hash),
+                ]);
+            }
+            println!("{table}");
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum TagCommands {
+    List,
+}
+
+fn do_tag_cmd(conn: &Connection, cmd: &TagCommands) {
+    match cmd {
+        TagCommands::List => {
+            let (items,): (Vec<((String, String), String)>,) = get_artifact_manager_proxy(conn)
+                .method_call("com.snarpix.taneleer.ArtifactManager", "GetTags", ())
+                .unwrap();
+
+            let mut table = create_table();
+            table.set_header(vec![
+                Cell::new("Tag"),
+                Cell::new("Tag value"),
+                Cell::new("Artifact uuid"),
+            ]);
+
+            for ((tag_name, tag_value), artifact_uuid) in items {
+                table.add_row(vec![
+                    Cell::new(tag_name),
+                    Cell::new(tag_value),
+                    Cell::new(artifact_uuid),
+                ]);
+            }
+            println!("{table}");
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum UsageCommands {
+    List,
+}
+
+fn do_usage_cmd(conn: &Connection, cmd: &UsageCommands) {
+    match cmd {
+        UsageCommands::List => {
+            let (items,): (Vec<(String, (String, String))>,) = get_artifact_manager_proxy(conn)
+                .method_call("com.snarpix.taneleer.ArtifactManager", "GetUsages", ())
+                .unwrap();
+
+            let mut table = create_table();
+            table.set_header(vec![
+                Cell::new("Usage uuid"),
+                Cell::new("Artifact uuid"),
+                Cell::new("Reserve time"),
+            ]);
+
+            for (uuid, (artifact_uuid, reserve_time)) in items {
+                table.add_row(vec![
+                    Cell::new(uuid),
+                    Cell::new(artifact_uuid),
+                    Cell::new(reserve_time),
+                ]);
+            }
+            println!("{table}");
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -208,6 +316,15 @@ fn main() {
         }
         MainCommands::Source { cmd } => {
             do_source_cmd(&conn, cmd);
+        }
+        MainCommands::Item { cmd } => {
+            do_item_cmd(&conn, cmd);
+        }
+        MainCommands::Tag { cmd } => {
+            do_tag_cmd(&conn, cmd);
+        }
+        MainCommands::Usage { cmd } => {
+            do_usage_cmd(&conn, cmd);
         }
     }
 }

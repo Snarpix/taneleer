@@ -7,12 +7,14 @@ use tokio_stream::wrappers::BroadcastStream;
 use url::Url;
 use uuid::Uuid;
 
-use crate::artifact::{Artifact, ArtifactState};
+use crate::artifact::{Artifact, ArtifactItem, ArtifactState};
 use crate::backend_pack::Backends;
 use crate::class::{ArtifactClassData, ArtifactClassState};
 use crate::error::Result;
 use crate::source::Source;
 use crate::storage::Storage;
+use crate::tag::{ArtifactTag, Tag};
+use crate::usage::ArtifactUsage;
 
 pub type SharedArtifactManager = Arc<Mutex<ArtifactManager>>;
 pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
@@ -109,11 +111,23 @@ impl ArtifactManager {
         self.storage.get_sources().await
     }
 
+    pub async fn get_items(&self) -> Result<Vec<ArtifactItem>> {
+        self.storage.get_items().await
+    }
+
+    pub async fn get_tags(&self) -> Result<Vec<ArtifactTag>> {
+        self.storage.get_tags().await
+    }
+
+    pub async fn get_usages(&self) -> Result<Vec<ArtifactUsage>> {
+        self.storage.get_usages().await
+    }
+
     pub async fn reserve_artifact(
         &mut self,
         class_name: String,
         sources: Vec<Source>,
-        tags: Vec<(String, Option<String>)>,
+        tags: Vec<Tag>,
         proxy: Option<String>,
     ) -> Result<(Uuid, Url)> {
         let artifact_uuid = Uuid::new_v4();
@@ -156,7 +170,7 @@ impl ArtifactManager {
     pub async fn commit_artifact_reserve(
         &mut self,
         artifact_uuid: Uuid,
-        tags: Vec<(String, Option<String>)>,
+        tags: Vec<Tag>,
     ) -> Result<()> {
         let (class_name, backend_name, artifact_type) = self
             .storage

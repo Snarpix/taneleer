@@ -3,10 +3,12 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::Storage;
-use crate::artifact::{Artifact, ArtifactItemInfo, ArtifactState};
+use crate::artifact::{Artifact, ArtifactItem, ArtifactItemInfo, ArtifactState};
 use crate::class::{ArtifactClassData, ArtifactClassState, ArtifactType};
 use crate::error::Result;
 use crate::source::{Hashsum, Source, SourceType};
+use crate::tag::{ArtifactTag, Tag};
+use crate::usage::ArtifactUsage;
 
 #[derive(Debug)]
 pub enum SqliteError {
@@ -393,12 +395,45 @@ SELECT A.uuid, name, TA.uuid
         Ok(res)
     }
 
+    async fn get_items(&self) -> Result<Vec<ArtifactItem>> {
+        sqlx::query_as::<_, ArtifactItem>(
+            r#"
+SELECT A.uuid AS uuid, identifier AS id, size, hash_type, hash
+    FROM artifact_items AS AI JOIN artifacts AS A ON AI.artifact_id = A.id;"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.into())
+    }
+
+    async fn get_tags(&self) -> Result<Vec<ArtifactTag>> {
+        sqlx::query_as::<_, ArtifactTag>(
+            r#"
+SELECT A.uuid AS artifact_uuid, name, value
+    FROM artifact_tags AS AT JOIN artifacts AS A ON AT.artifact_id = A.id;"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.into())
+    }
+
+    async fn get_usages(&self) -> Result<Vec<ArtifactUsage>> {
+        sqlx::query_as::<_, ArtifactUsage>(
+            r#"
+SELECT A.uuid AS artifact_uuid, AU.uuid AS uuid, AU.reserve_time AS reserve_time
+    FROM artifact_usage AS AU JOIN artifacts AS A ON AU.artifact_id = A.id;"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.into())
+    }
+
     async fn begin_reserve_artifact(
         &mut self,
         artifact_uuid: Uuid,
         class_name: &str,
         sources: &[Source],
-        tags: &[(String, Option<String>)],
+        tags: &[Tag],
     ) -> Result<(String, ArtifactType)> {
         let mut t = self.pool.begin().await?;
         let (artifact_class_id, backend_name, artifact_type): (i64, String, String) = sqlx::query_as(
@@ -469,7 +504,7 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, "git", ?3, "sha1", ?4);
                 }
             }
         }
-        for (tag_name, tag_value) in tags {
+        for Tag { name, value } in tags {
             sqlx::query(
                 r#"
 INSERT INTO artifact_tags(artifact_id, name, value) 
@@ -477,8 +512,8 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
             "#,
             )
             .bind(artifact_uuid.as_bytes().as_ref())
-            .bind(tag_name)
-            .bind(tag_value)
+            .bind(name)
+            .bind(value)
             .execute(&mut t)
             .await?;
         }
@@ -540,7 +575,7 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
     async fn begin_artifact_commit(
         &mut self,
         artifact_uuid: Uuid,
-        tags: &[(String, Option<String>)],
+        tags: &[Tag],
     ) -> Result<(String, String, ArtifactType)> {
         let mut t = self.pool.begin().await?;
         let (artifact_class_name, backend_name, artifact_type): (String, String, ArtifactType) =
@@ -556,7 +591,7 @@ WHERE A.uuid = ?1 AND A.state = ?2 AND A.next_state IS NULL;"#,
             .fetch_one(&mut t)
             .await?;
 
-        for (tag_name, tag_value) in tags {
+        for Tag { name, value } in tags {
             if let Err(e) = sqlx::query(
                 r#"
 INSERT INTO artifact_tags(artifact_id, name, value) 
@@ -564,8 +599,8 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
             "#,
             )
             .bind(artifact_uuid)
-            .bind(tag_name)
-            .bind(tag_value)
+            .bind(name)
+            .bind(value)
             .execute(&mut t)
             .await
             {
@@ -578,9 +613,9 @@ UPDATE artifact_tags SET value = ?1
 WHERE artifact_id = (SELECT id FROM artifacts WHERE uuid = ?2) AND name = ?3;
                         "#,
                         )
-                        .bind(tag_value)
+                        .bind(value)
                         .bind(artifact_uuid)
-                        .bind(tag_name)
+                        .bind(name)
                         .execute(&mut t)
                         .await?;
                         continue;

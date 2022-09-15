@@ -32,6 +32,13 @@ pub struct Artifact {
     pub data: ArtifactData,
 }
 
+#[derive(sqlx::FromRow)]
+pub struct ArtifactItem {
+    pub uuid: Uuid,
+    #[sqlx(flatten)]
+    pub info: ArtifactItemInfo,
+}
+
 pub struct ArtifactItemInfo {
     pub id: String,
     pub size: u64,
