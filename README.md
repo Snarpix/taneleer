@@ -17,12 +17,14 @@ It's currently in heavy development, no stability guaranties.
 
 By submitting a contribution to this project you accept that your contribution will be licensed under AGPL-3.0, AND you grant maintainer a right to relicense  your contribution under any other licence. 
 
-This is need for future-proofing of the project. If I need to use GPL 2.0 lib, I can just relicense whole project under GPL 2.0, without asking each maintainer individualy.
+This is need for future-proofing of the project. If I need to use GPL 2.0 lib, I can just relicense whole project under GPL 2.0, without asking each contributor individualy.
 
 ### In formal words:
-By submitting Contribution to this project, the The Contributor grants sublicensable, irrevocable, perpetual, worldwide, non-exclusive, royalty-free and fully paid-up copyright and
-trade secret license to reproduce, adapt, translate, modify, and prepare derivative works of, publicly display,
-publicly perform, sublicense, make available and distribute his Contribution and any derivative works
+Maintainer is Stanislav Shmarov <github@snarpix.com>.
+Contribution is the code, documentation or other original works submitted to be included in this project.
+Contributor is person or company submitting the Contribution.
+By submitting Contribution to this project, the Contributor grants to Maintainer a sublicensable, irrevocable, perpetual, worldwide, non-exclusive, royalty-free and fully paid-up copyright and trade secret license to reproduce, adapt, translate, modify, and prepare 
+derivative works of, publicly display, publicly perform, sublicense, make available and distribute his Contribution and any derivative works
 thereof under license terms of Maintainer's choosing including any Open Source Software or Commercial license.
 
 ## License
