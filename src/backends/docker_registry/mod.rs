@@ -471,13 +471,11 @@ impl DockerRegistryBackend {
                 )
                     .into_response());
             }
-            Err(_) => {
-                return Ok((
-                    StatusCode::NOT_FOUND,
-                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-                )
-                    .into_response());
-            }
+            Err(_) => Ok((
+                StatusCode::NOT_FOUND,
+                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+            )
+                .into_response()),
         }
     }
 
@@ -515,7 +513,7 @@ impl DockerRegistryBackend {
 
         let media_type = parsed_mainfest
             .get("mediaType")
-            .and_then(|v| v.as_str().clone())
+            .and_then(|v| v.as_str())
             .ok_or(DockerError::InvalidDigest)?;
 
         let mut layers = Vec::<Sha256>::new();
@@ -668,13 +666,11 @@ impl DockerRegistryBackend {
                 )
                     .into_response());
             }
-            Err(_) => {
-                return Ok((
-                    StatusCode::NOT_FOUND,
-                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-                )
-                    .into_response());
-            }
+            Err(_) => Ok((
+                StatusCode::NOT_FOUND,
+                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+            )
+                .into_response()),
         }
     }
 
@@ -735,13 +731,11 @@ impl DockerRegistryBackend {
                 )
                     .into_response());
             }
-            Err(_) => {
-                return Ok((
-                    StatusCode::NOT_FOUND,
-                    [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-                )
-                    .into_response());
-            }
+            Err(_) => Ok((
+                StatusCode::NOT_FOUND,
+                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
+            )
+                .into_response()),
         }
     }
 }
@@ -813,10 +807,7 @@ impl Backend for DockerRegistryBackend {
             .await?;
         Ok(Url::parse(&format!(
             "{}:{}/{}:{}",
-            self.state.hostname,
-            self.state.port,
-            class_name,
-            uuid.to_string()
+            self.state.hostname, self.state.port, class_name, uuid
         ))
         .unwrap())
     }
@@ -850,10 +841,7 @@ impl Backend for DockerRegistryBackend {
         // TODO: Maybe check existence
         Ok(Url::parse(&format!(
             "{}:{}/{}:{}",
-            self.state.hostname,
-            self.state.port,
-            class_name,
-            uuid.to_string()
+            self.state.hostname, self.state.port, class_name, uuid
         ))
         .unwrap())
     }

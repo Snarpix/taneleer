@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use dbus::arg::{Append, Dict, RefArg, Variant};
+use dbus::arg::{Dict, RefArg, Variant};
 use dbus::channel::{BusType, MatchingReceiver};
 use dbus::message::MatchRule;
 use dbus::nonblock::SyncConnection;
@@ -176,7 +176,7 @@ impl DBusFrontend {
                             let res: StdResult<_, MethodErr> = async move {
                                 match obj?.lock().await.get_artifact_classes().await {
                                     Ok(r) => Ok(r),
-                                    Err(e) => {
+                                    Err(_) => {
                                         Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
                                             .into())
                                     }
@@ -238,7 +238,7 @@ impl DBusFrontend {
                                                     <&str>::from(info.data.state).to_owned(),
                                                     info.data
                                                         .next_state
-                                                        .map(|v| <&str>::from(v))
+                                                        .map(<&str>::from)
                                                         .unwrap_or("")
                                                         .to_owned(),
                                                     info.data

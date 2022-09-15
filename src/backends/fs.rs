@@ -100,7 +100,7 @@ impl Backend for FsBackend {
                         }
                     }
                 }
-                ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
+                ArtifactType::DockerContainer => Err(FsError::InvalidArtifactType.into()),
             }
         }
         .await;
@@ -109,7 +109,7 @@ impl Backend for FsBackend {
                 warn!("Failed to cleanup dir: {:?}", e);
             }
         }
-        res.map_err(|e| e.into())
+        res
     }
 
     async fn commit_artifact(

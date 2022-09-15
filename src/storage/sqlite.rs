@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
 use super::Storage;
-use crate::artifact::{Artifact, ArtifactData, ArtifactItemInfo, ArtifactState};
+use crate::artifact::{Artifact, ArtifactItemInfo, ArtifactState};
 use crate::class::{ArtifactClassData, ArtifactClassState, ArtifactType};
 use crate::error::Result;
 use crate::source::{Hashsum, Source, SourceType};

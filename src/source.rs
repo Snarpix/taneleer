@@ -26,11 +26,11 @@ impl Hashsum {
         if name != "sha256" {
             return Err(HashsumParseError::InvalidType);
         }
-        return Ok(Hashsum::Sha256(
+        Ok(Hashsum::Sha256(
             bytes
                 .try_into()
                 .map_err(|_| HashsumParseError::InvalidLength)?,
-        ));
+        ))
     }
 }
 
