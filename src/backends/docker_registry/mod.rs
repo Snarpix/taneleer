@@ -2,16 +2,18 @@ mod storage;
 
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::io::Cursor;
+use std::io::{Cursor, ErrorKind};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path as StdPath, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::StreamBody;
 use axum::extract::{BodyStream, Path, Query};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::{
@@ -21,21 +23,21 @@ use axum::{
 };
 use bytes::Buf;
 use futures::StreamExt;
-use libc::ENOENT;
-use log::info;
+use log::{error, info, warn};
 use sha2::Digest;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 use tokio_util::io::ReaderStream;
+use tower::ServiceBuilder;
 use url::Url;
 use uuid::Uuid;
 
 use crate::artifact::ArtifactItemInfo;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::config::backend::ConfigDockerRegistry;
-use crate::error::Result;
+use crate::error::Error;
 use crate::source::Sha256;
-use crate::util::hash_file_sha256;
+use crate::util::{hash_file_sha256, rename_no_replace};
 
 use super::Backend;
 
@@ -51,6 +53,77 @@ struct DockerRegistryBackendState {
     storage: Box<dyn storage::Storage + Send + Sync>,
 }
 
+impl DockerRegistryBackendState {
+    fn repo_path(&self, repo_name: &str) -> PathBuf {
+        let mut file_path = root_repo_path(&self.root_path);
+        file_path.push(&repo_name);
+        file_path
+    }
+
+    fn upload_path(&self, repo_name: &str, upload_uuid: &Uuid) -> PathBuf {
+        let mut file_path = self.repo_path(repo_name);
+        file_path.push("uploads");
+        file_path.push(upload_uuid.to_string());
+        file_path
+    }
+
+    fn blob_path(&self, repo_name: &str, digest: &Sha256) -> PathBuf {
+        let mut blobs_path = self.repo_path(repo_name);
+        blobs_path.push("blobs");
+        blobs_path.push("sha256");
+        blobs_path.push(hex::encode(digest));
+        blobs_path
+    }
+
+    fn manifest_by_digest_path(&self, repo_name: &str, digest: &Sha256) -> PathBuf {
+        let mut mani_path = self.repo_path(repo_name);
+        mani_path.push("manifests");
+        mani_path.push("digests");
+        mani_path.push("sha256");
+        mani_path.push(hex::encode(digest));
+        mani_path
+    }
+
+    fn manifest_by_digest_rel_path(&self, _repo_name: &str, digest: &Sha256) -> PathBuf {
+        let mut mani_path = PathBuf::new();
+        mani_path.push("..");
+        mani_path.push("..");
+        mani_path.push("digests");
+        mani_path.push("sha256");
+        mani_path.push(hex::encode(digest));
+        mani_path
+    }
+
+    // In a folder, so we can track created reserves
+    fn manifest_by_uuid_tag_path(&self, repo_name: &str, tag: &Uuid) -> PathBuf {
+        let mut mani_path = self.repo_path(repo_name);
+        mani_path.push("manifests");
+        mani_path.push("tags");
+        mani_path.push(tag.to_string());
+        mani_path.push("manifest");
+        mani_path
+    }
+
+    fn global_blob_path(&self, digest: &Sha256) -> PathBuf {
+        let mut blobs_path = blobs_path(&self.root_path);
+        blobs_path.push("sha256");
+        blobs_path.push(hex::encode(digest));
+        blobs_path
+    }
+
+    fn global_rel_blob_path(&self, digest: &Sha256) -> PathBuf {
+        let mut rel_path = PathBuf::new();
+        rel_path.push("..");
+        rel_path.push("..");
+        rel_path.push("..");
+        rel_path.push("..");
+        rel_path.push("blobs");
+        rel_path.push("sha256");
+        rel_path.push(hex::encode(digest));
+        rel_path
+    }
+}
+
 const DOCKER_DISTRIBUTION_API_VERSION: header::HeaderName =
     header::HeaderName::from_static("docker-distribution-api-version");
 const API_VERSION: header::HeaderValue = header::HeaderValue::from_static("registry/2.0");
@@ -61,18 +134,135 @@ const DOCKER_UPLOAD_UUID: header::HeaderName =
 
 lazy_static::lazy_static! {
     static ref RANGE_REGEX: regex::Regex = regex::Regex::new("^([0-9]+)-([0-9]+)$").unwrap();
+    static ref REPO_NAME_REGEX: regex::Regex = regex::Regex::new("^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$").unwrap();
+    static ref REFERENCE_REGEX: regex::Regex = regex::Regex::new("^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$").unwrap();
+    static ref DIGEST_REGEX: regex::Regex = regex::Regex::new("^sha256:([A-Fa-f0-9]{64})$").unwrap();
+}
+
+fn blobs_path(root_path: &StdPath) -> PathBuf {
+    let mut blobs_path = root_path.to_owned();
+    blobs_path.push("blobs");
+    blobs_path
+}
+
+fn root_repo_path(root_path: &StdPath) -> PathBuf {
+    let mut blobs_path = root_path.to_owned();
+    blobs_path.push("repositories");
+    blobs_path
+}
+
+async fn create_dir_if_not_exists(path: &StdPath) -> Result<(), Error> {
+    match tokio::fs::DirBuilder::new().mode(0o700).create(&path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+enum Reference {
+    UuidTag(Uuid),
+    Digest(Sha256),
+}
+
+fn parse_reference(reference: &str) -> Option<Reference> {
+    get_digest(reference)
+        .map(Reference::Digest)
+        .or_else(|| Uuid::from_str(reference).ok().map(Reference::UuidTag))
+}
+
+fn get_digest(reference: &str) -> Option<Sha256> {
+    if let Some(c) = DIGEST_REGEX.captures(reference) {
+        let c = c.get(1).unwrap();
+        let mut digest_hash: Sha256 = Default::default();
+        hex::decode_to_slice(c.as_str(), &mut digest_hash).unwrap();
+        Some(digest_hash)
+    } else {
+        None
+    }
+}
+
+struct DockerRegistryError(Error);
+
+impl IntoResponse for DockerRegistryError {
+    fn into_response(self) -> Response {
+        error!("{}", &self.0);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Something went wrong: {}", self.0),
+        )
+            .into_response()
+    }
+}
+
+impl From<Error> for DockerRegistryError {
+    fn from(e: Error) -> Self {
+        Self(e)
+    }
+}
+
+impl From<std::io::Error> for DockerRegistryError {
+    fn from(e: std::io::Error) -> Self {
+        Self(Box::new(e))
+    }
+}
+
+impl From<uuid::Error> for DockerRegistryError {
+    fn from(e: uuid::Error) -> Self {
+        Self(Box::new(e))
+    }
+}
+
+impl From<axum::Error> for DockerRegistryError {
+    fn from(e: axum::Error) -> Self {
+        Self(Box::new(e))
+    }
+}
+
+impl From<DockerError> for DockerRegistryError {
+    fn from(e: DockerError) -> Self {
+        Self(Box::new(e))
+    }
+}
+
+impl From<std::array::TryFromSliceError> for DockerRegistryError {
+    fn from(e: std::array::TryFromSliceError) -> Self {
+        Self(Box::new(e))
+    }
+}
+
+impl From<serde_json::Error> for DockerRegistryError {
+    fn from(e: serde_json::Error) -> Self {
+        Self(Box::new(e))
+    }
 }
 
 impl DockerRegistryBackend {
-    pub async fn new(cfg: &ConfigDockerRegistry) -> Result<Self> {
+    pub async fn new(cfg: &ConfigDockerRegistry) -> Result<Self, Error> {
         let root_path = &cfg.root_path;
         let meta = tokio::fs::metadata(root_path).await?;
         if !meta.is_dir() {
             return Err(DockerError::RootIsNotDir.into());
         }
-        let mut new_perm = meta.permissions();
-        new_perm.set_mode(0o701);
-        tokio::fs::set_permissions(root_path, new_perm).await?;
+
+        let new_perm = {
+            let mut perm = meta.permissions();
+            perm.set_mode(0o700);
+            perm
+        };
+        tokio::fs::set_permissions(root_path, new_perm.clone()).await?;
+
+        let mut blobs_path = blobs_path(root_path);
+        create_dir_if_not_exists(&blobs_path).await?;
+        tokio::fs::set_permissions(&blobs_path, new_perm.clone()).await?;
+
+        blobs_path.push("sha256");
+        create_dir_if_not_exists(&blobs_path).await?;
+        tokio::fs::set_permissions(blobs_path, new_perm.clone()).await?;
+
+        let repo_path = root_repo_path(root_path);
+        create_dir_if_not_exists(&repo_path).await?;
+        tokio::fs::set_permissions(repo_path, new_perm.clone()).await?;
+
         let mut db_path = root_path.clone();
         db_path.push("docker.db");
         let storage = storage::new_storage(&db_path).await?;
@@ -86,15 +276,7 @@ impl DockerRegistryBackend {
 
         let addr = SocketAddr::new(cfg.address, cfg.port);
         let app = Router::new()
-            .route(
-                "/v2/",
-                get(|| async {
-                    (
-                        StatusCode::OK,
-                        [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-                    )
-                }),
-            )
+            .route("/v2/", get(|| async { StatusCode::OK }))
             .route("/v2/:name/blobs/uploads/", post(Self::start_upload))
             .route(
                 "/v2/:name/blobs/upload/:upload_uuid",
@@ -109,7 +291,11 @@ impl DockerRegistryBackend {
             .route("/v2/:name/manifests/:tag", put(Self::put_manifest))
             .route("/v2/:name/manifests/:tag", head(Self::check_manifest))
             .route("/v2/:name/manifests/:tag", get(Self::get_manifest))
-            .layer(Extension(state.clone()));
+            .layer(
+                ServiceBuilder::new()
+                    .layer(Extension(state.clone()))
+                    .layer(axum::middleware::from_fn(Self::add_docker_version)),
+            );
         let handle = tokio::spawn(async move {
             axum::Server::bind(&addr)
                 .serve(app.into_make_service())
@@ -123,92 +309,71 @@ impl DockerRegistryBackend {
         })
     }
 
-    async fn start_upload(
-        Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path(name): Path<String>,
-    ) -> Response {
-        println!("Post blob: {}", &name);
-        match Self::start_upload_impl(state, name).await {
-            Ok(r) => r.into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
-            )
-                .into_response(),
-        }
+    async fn add_docker_version<B>(req: Request<B>, next: Next<B>) -> Response {
+        let mut res = next.run(req).await;
+        res.headers_mut()
+            .insert(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION);
+        res
     }
 
-    async fn start_upload_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-    ) -> Result<impl IntoResponse> {
+    async fn start_upload(
+        Extension(state): Extension<Arc<DockerRegistryBackendState>>,
+        Path(repo_name): Path<String>,
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Post blob: {}", &repo_name);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
+            )
+                .into_response());
+        }
         let upload_uuid = Uuid::new_v4();
         let upload_uuid_str = upload_uuid.to_string();
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("upload");
-        file_path.push(&upload_uuid_str);
+        let upload_path = state.upload_path(&repo_name, &upload_uuid);
         tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode(0o606)
-            .open(&file_path)
+            .mode(0o600)
+            .open(&upload_path)
             .await?
-            .set_permissions(PermissionsExt::from_mode(0o606))
+            .flush()
             .await?;
         Ok((
             StatusCode::ACCEPTED,
             [
                 (
-                    DOCKER_DISTRIBUTION_API_VERSION,
-                    API_VERSION.to_str().unwrap().to_owned(),
-                ),
-                (
                     header::LOCATION,
-                    format!("/v2/{}/blobs/upload/{}", name, upload_uuid_str),
+                    format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
                 ),
                 (header::CONTENT_LENGTH, 0.to_string()),
                 (DOCKER_UPLOAD_UUID, upload_uuid_str),
                 (header::RANGE, "0-0".to_owned()),
             ],
-        ))
+        )
+            .into_response())
     }
 
     async fn upload_chunk(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, upload_uuid_str)): Path<(String, String)>,
-        headers: HeaderMap,
-        stream: BodyStream,
-    ) -> Response {
-        println!("Patch blob: {}", &name);
-        match Self::upload_chunk_impl(state, name, upload_uuid_str, headers, stream).await {
-            Ok(r) => r.into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
-            )
-                .into_response(),
-        }
-    }
-
-    async fn upload_chunk_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        upload_uuid_str: String,
+        Path((repo_name, upload_uuid_str)): Path<(String, String)>,
         headers: HeaderMap,
         mut stream: BodyStream,
-    ) -> Result<impl IntoResponse> {
-        let _upload_uuid = Uuid::from_str(&upload_uuid_str)?;
-
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("upload");
-        file_path.push(&upload_uuid_str);
-
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Patch blob: {}", &repo_name);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
+            )
+                .into_response());
+        }
+        let upload_uuid = Uuid::from_str(&upload_uuid_str)?;
+        let upload_path = state.upload_path(&repo_name, &upload_uuid);
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .append(true)
-            .open(&file_path)
+            .open(&upload_path)
             .await?;
 
         let uploaded_file_size = file.metadata().await?.len();
@@ -235,18 +400,15 @@ impl DockerRegistryBackend {
                     StatusCode::RANGE_NOT_SATISFIABLE,
                     [
                         (
-                            DOCKER_DISTRIBUTION_API_VERSION,
-                            API_VERSION.to_str().unwrap().to_owned(),
-                        ),
-                        (
                             header::LOCATION,
-                            format!("/v2/{}/blobs/upload/{}", name, upload_uuid_str),
+                            format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
                         ),
                         (header::CONTENT_LENGTH, 0.to_string()),
                         (header::RANGE, format!("0-{}", uploaded_file_size - 1)),
                         (DOCKER_UPLOAD_UUID, upload_uuid_str),
                     ],
-                ));
+                )
+                    .into_response());
             }
         }
 
@@ -257,18 +419,14 @@ impl DockerRegistryBackend {
                 size += file.write_buf(&mut chunk).await?;
             }
         }
-        println!("patch size {}", &size);
-        println!("0-{}", size - 1);
+        println!("Patch size {}", &size);
+        file.flush().await?;
         Ok((
             StatusCode::ACCEPTED,
             [
                 (
-                    DOCKER_DISTRIBUTION_API_VERSION,
-                    API_VERSION.to_str().unwrap().to_owned(),
-                ),
-                (
                     header::LOCATION,
-                    format!("/v2/{}/blobs/upload/{}", name, upload_uuid_str),
+                    format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
                 ),
                 (header::CONTENT_LENGTH, 0.to_string()),
                 (
@@ -277,176 +435,122 @@ impl DockerRegistryBackend {
                 ),
                 (DOCKER_UPLOAD_UUID, upload_uuid_str),
             ],
-        ))
+        )
+            .into_response())
     }
 
     async fn finalize_upload(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, upload_uuid_str)): Path<(String, String)>,
+        Path((repo_name, upload_uuid_str)): Path<(String, String)>,
         Query(params): Query<HashMap<String, String>>,
-    ) -> Response {
-        println!("Put blob:{}", &name);
-
-        match Self::finalize_upload_impl(state, name, upload_uuid_str, params).await {
-            Ok(r) => r,
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Put blob:{}", &repo_name);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
             )
-                .into_response(),
+                .into_response());
         }
-    }
+        let upload_uuid = Uuid::from_str(&upload_uuid_str)?;
+        let upload_path = state.upload_path(&repo_name, &upload_uuid);
 
-    async fn finalize_upload_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        upload_uuid_str: String,
-        params: HashMap<String, String>,
-    ) -> Result<Response> {
         let digest = params.get("digest").ok_or(DockerError::NoDigest)?;
-        let mut digest_hash: Sha256 = Default::default();
-        if let Some(hash) = digest.strip_prefix("sha256:") {
-            hex::decode_to_slice(hash, &mut digest_hash)?;
-        } else {
-            return Err(DockerError::InvalidDigest.into());
-        }
+        let digest_hash = get_digest(digest).ok_or(DockerError::InvalidDigest)?;
 
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("upload");
-        file_path.push(&upload_uuid_str);
-        tokio::fs::set_permissions(&file_path, PermissionsExt::from_mode(0o400)).await?;
+        tokio::fs::set_permissions(&upload_path, PermissionsExt::from_mode(0o400)).await?;
 
-        let hash = hash_file_sha256(&file_path).await?;
-        let size = tokio::fs::metadata(&file_path).await?.len();
+        let hash = hash_file_sha256(&upload_path).await?;
+        let size = tokio::fs::metadata(&upload_path).await?.len();
 
-        if digest_hash == hash {
-            let mut target_path = state.root_path.clone();
-            target_path.push(&name);
-            target_path.push("blobs");
-            target_path.push(digest);
-            let exists = match tokio::fs::metadata(&target_path).await {
-                Ok(_) => true,
-                Err(e) => {
-                    if let Some(ENOENT) = e.raw_os_error() {
-                        false
-                    } else {
-                        return Err(e.into());
-                    }
-                }
-            };
-            if exists {
-                info!("Blob already exists: {}", digest);
-                tokio::fs::remove_file(file_path).await?;
-            } else {
-                tokio::fs::rename(file_path, target_path).await?;
-            }
-
-            state
-                .storage
-                .commit_blob(&name, hash, size.try_into().unwrap())
-                .await?;
-
-            Ok((
-                StatusCode::CREATED,
-                [
-                    (
-                        DOCKER_DISTRIBUTION_API_VERSION,
-                        API_VERSION.to_str().unwrap().to_owned(),
-                    ),
-                    (
-                        header::LOCATION,
-                        format!("/v2/{}/blobs/upload/{}", name, digest),
-                    ),
-                    (header::CONTENT_LENGTH, 0.to_string()),
-                    (DOCKER_CONTENT_DIGEST, digest.clone()),
-                ],
-            )
-                .into_response())
-        } else {
-            Ok((
+        if digest_hash != hash {
+            return Ok((
                 StatusCode::NOT_ACCEPTABLE,
-                [
-                    (
-                        DOCKER_DISTRIBUTION_API_VERSION,
-                        API_VERSION.to_str().unwrap().to_owned(),
-                    ),
-                    (header::CONTENT_LENGTH, 0.to_string()),
-                ],
+                [(header::CONTENT_LENGTH, 0.to_string())],
             )
-                .into_response())
+                .into_response());
         }
+
+        let global_path = state.global_blob_path(&hash);
+        match rename_no_replace(&upload_path, global_path).await {
+            Ok(()) => {
+                state
+                    .storage
+                    .commit_blob(&repo_name, hash, size.try_into().unwrap())
+                    .await?;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                info!("Blob already exists: {}", digest);
+                tokio::fs::remove_file(upload_path).await?;
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let local_path = state.blob_path(&repo_name, &hash);
+        let rel_path = state.global_rel_blob_path(&hash);
+        match tokio::fs::symlink(rel_path, local_path).await {
+            Ok(()) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                info!("Blob already linked: {}", digest);
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        Ok((
+            StatusCode::CREATED,
+            [
+                (
+                    header::LOCATION,
+                    format!("/v2/{}/blobs/upload/{}", repo_name, digest),
+                ),
+                (header::CONTENT_LENGTH, 0.to_string()),
+                (DOCKER_CONTENT_DIGEST, digest.clone()),
+            ],
+        )
+            .into_response())
     }
 
     async fn check_blob(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, reference)): Path<(String, String)>,
-    ) -> Response {
-        println!("Head blob: {}, {}", &name, &reference);
-        match Self::check_blob_impl(state, name, reference).await {
-            Ok(r) => r,
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
+        Path((repo_name, digest)): Path<(String, String)>,
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Head blob: {}, {}", &repo_name, &digest);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
             )
-                .into_response(),
+                .into_response());
         }
-    }
-
-    async fn check_blob_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        reference: String,
-    ) -> Result<Response> {
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("blobs");
-        file_path.push(&reference);
+        let digest_hash = get_digest(&digest).ok_or(DockerError::InvalidDigest)?;
+        let file_path = state.blob_path(&repo_name, &digest_hash);
         match tokio::fs::metadata(&file_path).await {
             Ok(m) => Ok((
                 StatusCode::OK,
                 [
-                    (
-                        DOCKER_DISTRIBUTION_API_VERSION,
-                        API_VERSION.to_str().unwrap().to_owned(),
-                    ),
                     (header::CONTENT_LENGTH, m.len().to_string()),
-                    (DOCKER_CONTENT_DIGEST, reference.parse().unwrap()),
+                    (DOCKER_CONTENT_DIGEST, digest.parse().unwrap()),
                 ],
             )
                 .into_response()),
-            Err(_) => Ok((
-                StatusCode::NOT_FOUND,
-                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-            )
-                .into_response()),
+            Err(_) => Ok(StatusCode::NOT_FOUND.into_response()),
         }
     }
 
     async fn get_blob(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, reference)): Path<(String, String)>,
-    ) -> Response {
-        println!("Get blob: {}, {}", &name, &reference);
-        match Self::get_blob_impl(state, name, reference).await {
-            Ok(r) => r,
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
+        Path((repo_name, digest)): Path<(String, String)>,
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Get blob: {}, {}", &repo_name, &digest);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
             )
-                .into_response(),
+                .into_response());
         }
-    }
-
-    async fn get_blob_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        reference: String,
-    ) -> Result<Response> {
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("blobs");
-        file_path.push(&reference);
+        let digest_hash = get_digest(&digest).ok_or(DockerError::InvalidDigest)?;
+        let file_path = state.blob_path(&repo_name, &digest_hash);
 
         match tokio::fs::OpenOptions::new()
             .read(true)
@@ -457,56 +561,63 @@ impl DockerRegistryBackend {
                 let size = file.metadata().await?.len();
                 let stream = ReaderStream::new(file);
                 let body = StreamBody::new(stream);
-                return Ok((
+                Ok((
                     StatusCode::OK,
                     [
-                        (
-                            DOCKER_DISTRIBUTION_API_VERSION,
-                            API_VERSION.to_str().unwrap().to_owned(),
-                        ),
                         (header::CONTENT_LENGTH, size.to_string()),
-                        (DOCKER_CONTENT_DIGEST, reference),
+                        (DOCKER_CONTENT_DIGEST, digest),
                     ],
                     body,
                 )
-                    .into_response());
+                    .into_response())
             }
-            Err(_) => Ok((
-                StatusCode::NOT_FOUND,
-                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-            )
-                .into_response()),
+            Err(_) => Ok(StatusCode::NOT_FOUND.into_response()),
         }
     }
 
     async fn put_manifest(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, tag)): Path<(String, String)>,
+        Path((repo_name, reference_str)): Path<(String, String)>,
         body: String,
-    ) -> Response {
-        println!("Put manifest: {}, {}", &name, &tag);
-        match Self::put_manifest_impl(state, name, tag, body).await {
-            Ok(r) => r,
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Put manifest: {}, {}", &repo_name, &reference_str);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
             )
-                .into_response(),
+                .into_response());
         }
-    }
-
-    async fn put_manifest_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        tag: String,
-        body: String,
-    ) -> Result<Response> {
-        let artifact_uuid = Uuid::from_str(&tag)?;
+        let reference = parse_reference(&reference_str).ok_or(DockerError::InvalidDigest)?;
 
         let mut hasher = sha2::Sha256::new();
         hasher.update(&body);
-        let hash = hasher.finalize().try_into()?;
+        let hash: Sha256 = hasher.finalize().into();
         let hex_hash = "sha256:".to_owned() + &hex::encode(hash);
+
+        match &reference {
+            Reference::UuidTag(t) => {
+                // Early check, later check will be atomic
+                let mut tag_path = state.manifest_by_uuid_tag_path(&repo_name, t);
+                tag_path.pop();
+                match tokio::fs::metadata(tag_path).await {
+                    Ok(_) => (),
+                    Err(e) if e.kind() == ErrorKind::NotFound => {
+                        warn!("Tag is not reserved");
+                        return Ok((StatusCode::NOT_ACCEPTABLE, [(header::CONTENT_LENGTH, 0)])
+                            .into_response());
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Reference::Digest(d) => {
+                if &hash != d {
+                    return Ok(
+                        (StatusCode::NOT_ACCEPTABLE, [(header::CONTENT_LENGTH, 0)]).into_response()
+                    );
+                }
+            }
+        }
 
         // TODO: Error processing
         let parsed_mainfest: serde_json::Value = serde_json::from_str(&body)?;
@@ -546,71 +657,66 @@ impl DockerRegistryBackend {
             .ok_or(DockerError::InvalidDigest)?;
         layers.push(config_digest);
 
-        state
-            .storage
-            .commit_artifact(
-                artifact_uuid,
-                hash,
-                body.len().try_into().unwrap(),
-                media_type,
-                layers,
-            )
-            .await?;
+        let upload_uuid = Uuid::new_v4();
+        let upload_path = state.upload_path(&repo_name, &upload_uuid);
 
-        let mut target_path = state.root_path.clone();
-        target_path.push(&name);
-        target_path.push("manifests");
-        target_path.push(&hex_hash);
-
-        let exists = match tokio::fs::metadata(&target_path).await {
-            Ok(_) => true,
-            Err(e) => {
-                if let Some(ENOENT) = e.raw_os_error() {
-                    false
-                } else {
-                    return Err(e.into());
-                }
+        let body_len = body.len().try_into().unwrap();
+        {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&upload_path)
+                .await?;
+            let mut cursor = Cursor::new(body);
+            while cursor.has_remaining() {
+                file.write_buf(&mut cursor).await?;
             }
-        };
-        if exists {
-            info!("Manifest already exists: {}", hex_hash);
-        } else {
-            let mut upload_path = state.root_path.clone();
-            upload_path.push(&name);
-            upload_path.push("upload");
-            upload_path.push(&hex_hash);
-
-            {
-                let mut file = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o604)
-                    .open(&upload_path)
-                    .await?;
-                let mut cursor = Cursor::new(body);
-                while cursor.has_remaining() {
-                    file.write_buf(&mut cursor).await?;
-                }
-            }
-            tokio::fs::rename(upload_path, &target_path).await?;
+            file.flush().await?;
+            file.set_permissions(PermissionsExt::from_mode(0o400))
+                .await?;
         }
 
-        let mut tag_path = target_path.clone();
-        tag_path.pop();
-        tag_path.push(&tag);
+        let target_path = state.manifest_by_digest_path(&repo_name, &hash);
+        match rename_no_replace(&upload_path, &target_path).await {
+            Ok(()) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                info!("Blob already exists: {}", &hex_hash);
+                tokio::fs::remove_file(upload_path).await?;
+            }
+            Err(e) => return Err(e.into()),
+        };
 
-        // Tag should be unique
-        tokio::fs::symlink(&hex_hash, tag_path).await?;
+        if let Reference::UuidTag(artifact_uuid) = reference {
+            let tag_path = state.manifest_by_uuid_tag_path(&repo_name, &artifact_uuid);
+            let rel_main_path = state.manifest_by_digest_rel_path(&repo_name, &hash);
+            // Tag should be unique
+            match tokio::fs::symlink(&rel_main_path, &tag_path).await {
+                Ok(()) => (),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    info!("Tag already exists: {}", &hex_hash);
+                    let link = tokio::fs::read_link(tag_path).await?;
+                    if link != rel_main_path {
+                        return Ok((StatusCode::NOT_ACCEPTABLE, [(header::CONTENT_LENGTH, 0)])
+                            .into_response());
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+            state
+                .storage
+                .commit_artifact(artifact_uuid, hash, body_len, media_type, layers)
+                .await?;
+        }
 
         println!("Hash: {}", &hex_hash);
         Ok((
             StatusCode::CREATED,
             [
                 (
-                    DOCKER_DISTRIBUTION_API_VERSION,
-                    API_VERSION.to_str().unwrap().to_owned(),
+                    header::LOCATION,
+                    format!("/v2/{}/manifests/{}", repo_name, reference_str),
                 ),
-                (header::LOCATION, format!("/v2/{}/manifests/{}", name, tag)),
                 (header::CONTENT_LENGTH, 0.to_string()),
                 (DOCKER_CONTENT_DIGEST, hex_hash),
             ],
@@ -620,84 +726,71 @@ impl DockerRegistryBackend {
 
     async fn check_manifest(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, tag)): Path<(String, String)>,
-    ) -> Response {
-        println!("Head manifest: {}, {}", &name, &tag);
-        match Self::check_manifest_impl(state, name, tag).await {
-            Ok(r) => r,
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
+        Path((repo_name, reference_str)): Path<(String, String)>,
+    ) -> Result<Response, DockerRegistryError> {
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
             )
-                .into_response(),
+                .into_response());
         }
-    }
-
-    async fn check_manifest_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        tag: String,
-    ) -> Result<Response> {
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("manifests");
-        file_path.push(&tag);
+        let reference = parse_reference(&reference_str).ok_or(DockerError::InvalidDigest)?;
+        let file_path = match reference {
+            Reference::UuidTag(artifact_uuid) => {
+                state.manifest_by_uuid_tag_path(&repo_name, &artifact_uuid)
+            }
+            Reference::Digest(digest) => state.manifest_by_digest_path(&repo_name, &digest),
+        };
 
         match tokio::fs::metadata(&file_path).await {
             Ok(m) => {
                 let path = tokio::fs::read_link(&file_path).await?;
-                return Ok((
+                let hash_hex = path.file_name().unwrap().to_str().unwrap();
+                Ok((
                     StatusCode::OK,
                     [
-                        (
-                            DOCKER_DISTRIBUTION_API_VERSION,
-                            API_VERSION.to_str().unwrap().to_owned(),
-                        ),
                         (header::CONTENT_LENGTH, m.len().to_string()),
                         (
                             header::CONTENT_TYPE,
                             "application/vnd.docker.distribution.manifest.v2+json".to_owned(),
                         ),
-                        (
-                            DOCKER_CONTENT_DIGEST,
-                            path.file_name().unwrap().to_str().unwrap().to_owned(),
-                        ),
+                        (DOCKER_CONTENT_DIGEST, "sha256:".to_owned() + hash_hex),
                     ],
                 )
-                    .into_response());
+                    .into_response())
             }
-            Err(_) => Ok((
-                StatusCode::NOT_FOUND,
-                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-            )
-                .into_response()),
+            Err(_) => Ok(StatusCode::NOT_FOUND.into_response()),
         }
     }
 
     async fn get_manifest(
         Extension(state): Extension<Arc<DockerRegistryBackendState>>,
-        Path((name, tag)): Path<(String, String)>,
-    ) -> Response {
-        println!("Get manifest: {}, {}", &name, &tag);
-        match Self::get_manifest_impl(state, name, tag).await {
-            Ok(r) => r,
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Something went wrong: {}", e),
+        Path((repo_name, reference_str)): Path<(String, String)>,
+    ) -> Result<Response, DockerRegistryError> {
+        println!("Get manifest: {}, {}", &repo_name, &reference_str);
+        if !REPO_NAME_REGEX.is_match(&repo_name) {
+            return Ok((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                [(header::CONTENT_LENGTH, 0)],
             )
-                .into_response(),
+                .into_response());
         }
-    }
-
-    async fn get_manifest_impl(
-        state: Arc<DockerRegistryBackendState>,
-        name: String,
-        tag: String,
-    ) -> Result<Response> {
-        let mut file_path = state.root_path.clone();
-        file_path.push(&name);
-        file_path.push("manifests");
-        file_path.push(&tag);
+        let reference = parse_reference(&reference_str).ok_or(DockerError::InvalidDigest)?;
+        let (file_path, digest) = match reference {
+            Reference::UuidTag(artifact_uuid) => {
+                let file_path = state.manifest_by_uuid_tag_path(&repo_name, &artifact_uuid);
+                let target_path = tokio::fs::read_link(&file_path).await?;
+                let digest =
+                    "sha256:".to_owned() + target_path.file_name().unwrap().to_str().unwrap();
+                (file_path, digest)
+            }
+            Reference::Digest(digest) => {
+                let file_path = state.manifest_by_digest_path(&repo_name, &digest);
+                let digest = "sha256:".to_owned() + &hex::encode(&digest);
+                (file_path, digest)
+            }
+        };
 
         match tokio::fs::OpenOptions::new()
             .read(true)
@@ -706,20 +799,11 @@ impl DockerRegistryBackend {
         {
             Ok(file) => {
                 let size = file.metadata().await?.len();
-                let digest = match tokio::fs::read_link(&file_path).await {
-                    Ok(res) => res.file_name().unwrap().to_str().unwrap().to_owned(),
-                    Err(e) if e.kind() == tokio::io::ErrorKind::InvalidInput => tag,
-                    Err(e) => return Err(e.into()),
-                };
                 let stream = ReaderStream::new(file);
                 let body = StreamBody::new(stream);
-                return Ok((
+                Ok((
                     StatusCode::OK,
                     [
-                        (
-                            DOCKER_DISTRIBUTION_API_VERSION,
-                            API_VERSION.to_str().unwrap().to_owned(),
-                        ),
                         (header::CONTENT_LENGTH, size.to_string()),
                         (
                             header::CONTENT_TYPE,
@@ -729,13 +813,9 @@ impl DockerRegistryBackend {
                     ],
                     body,
                 )
-                    .into_response());
+                    .into_response())
             }
-            Err(_) => Ok((
-                StatusCode::NOT_FOUND,
-                [(DOCKER_DISTRIBUTION_API_VERSION, API_VERSION)],
-            )
-                .into_response()),
+            Err(_) => Ok(StatusCode::NOT_FOUND.into_response()),
         }
     }
 }
@@ -758,32 +838,61 @@ impl std::error::Error for DockerError {}
 
 #[async_trait]
 impl Backend for DockerRegistryBackend {
-    async fn create_class(&mut self, name: &str, data: &ArtifactClassData) -> Result<()> {
+    async fn create_class(&mut self, name: &str, data: &ArtifactClassData) -> Result<(), Error> {
         if !matches!(data.art_type, ArtifactType::DockerContainer) {
             return Err(DockerError::InvalidArtifactType.into());
         }
 
-        let mut dir_path = self.state.root_path.clone();
-        dir_path.push(name);
+        let mut dir_path = self.state.repo_path(name);
         tokio::fs::DirBuilder::new()
-            .mode(0o701)
+            .mode(0o700)
             .create(&dir_path)
             .await?;
-        dir_path.push("upload");
+
+        dir_path.push("uploads");
         tokio::fs::DirBuilder::new()
-            .mode(0o701)
+            .mode(0o700)
             .create(&dir_path)
             .await?;
+
         dir_path.pop();
         dir_path.push("blobs");
         tokio::fs::DirBuilder::new()
-            .mode(0o701)
+            .mode(0o700)
             .create(&dir_path)
             .await?;
+
+        dir_path.push("sha256");
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir_path)
+            .await?;
+
+        dir_path.pop();
         dir_path.pop();
         dir_path.push("manifests");
         tokio::fs::DirBuilder::new()
-            .mode(0o701)
+            .mode(0o700)
+            .create(&dir_path)
+            .await?;
+
+        dir_path.push("digests");
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir_path)
+            .await?;
+
+        dir_path.push("sha256");
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir_path)
+            .await?;
+
+        dir_path.pop();
+        dir_path.pop();
+        dir_path.push("tags");
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
             .create(&dir_path)
             .await?;
 
@@ -796,15 +905,23 @@ impl Backend for DockerRegistryBackend {
         class_name: &str,
         art_type: ArtifactType,
         uuid: Uuid,
-    ) -> Result<Url> {
+    ) -> Result<Url, Error> {
         if !matches!(art_type, ArtifactType::DockerContainer) {
             return Err(DockerError::InvalidArtifactType.into());
         }
+
+        let mut dir_path = self.state.manifest_by_uuid_tag_path(class_name, &uuid);
+        dir_path.pop();
+        tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&dir_path)
+            .await?;
 
         self.state
             .storage
             .create_artifact_reserve(uuid, class_name)
             .await?;
+
         Ok(Url::parse(&format!(
             "{}:{}/{}:{}",
             self.state.hostname, self.state.port, class_name, uuid
@@ -817,7 +934,7 @@ impl Backend for DockerRegistryBackend {
         class_name: &str,
         art_type: ArtifactType,
         uuid: Uuid,
-    ) -> Result<Vec<ArtifactItemInfo>> {
+    ) -> Result<Vec<ArtifactItemInfo>, Error> {
         if !matches!(art_type, ArtifactType::DockerContainer) {
             return Err(DockerError::InvalidArtifactType.into());
         }
@@ -833,7 +950,7 @@ impl Backend for DockerRegistryBackend {
         class_name: &str,
         art_type: ArtifactType,
         uuid: Uuid,
-    ) -> Result<Url> {
+    ) -> Result<Url, Error> {
         if !matches!(art_type, ArtifactType::DockerContainer) {
             return Err(DockerError::InvalidArtifactType.into());
         }
