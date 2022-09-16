@@ -339,6 +339,8 @@ impl DockerRegistryBackend {
             .await?
             .flush()
             .await?;
+
+        state.storage.create_upload(&repo_name, upload_uuid).await?;
         Ok((
             StatusCode::ACCEPTED,
             [
@@ -370,73 +372,81 @@ impl DockerRegistryBackend {
         }
         let upload_uuid = Uuid::from_str(&upload_uuid_str)?;
         let upload_path = state.upload_path(&repo_name, &upload_uuid);
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(&upload_path)
-            .await?;
 
-        let uploaded_file_size = file.metadata().await?.len();
+        state.storage.lock_upload(upload_uuid).await?;
 
-        let mut expected_size: Option<u64> = None;
-        if uploaded_file_size != 0 {
-            if let Some(true) = headers
-                .get(header::CONTENT_RANGE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| RANGE_REGEX.captures(v))
-                .map(|v| {
-                    (
-                        v.get(1).unwrap().as_str().parse::<u64>().unwrap(),
-                        v.get(2).unwrap().as_str().parse::<u64>().unwrap(),
-                    )
-                })
-                .map(|(start, end)| {
-                    expected_size = Some(end - start);
-                    start != uploaded_file_size + 1
-                })
-            {
-            } else {
-                return Ok((
-                    StatusCode::RANGE_NOT_SATISFIABLE,
-                    [
+        let res = async {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(&upload_path)
+                .await?;
+
+            let uploaded_file_size = file.metadata().await?.len();
+
+            let mut expected_size: Option<u64> = None;
+            if uploaded_file_size != 0 {
+                if let Some(true) = headers
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| RANGE_REGEX.captures(v))
+                    .map(|v| {
                         (
-                            header::LOCATION,
-                            format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
-                        ),
-                        (header::CONTENT_LENGTH, 0.to_string()),
-                        (header::RANGE, format!("0-{}", uploaded_file_size - 1)),
-                        (DOCKER_UPLOAD_UUID, upload_uuid_str),
-                    ],
-                )
-                    .into_response());
+                            v.get(1).unwrap().as_str().parse::<u64>().unwrap(),
+                            v.get(2).unwrap().as_str().parse::<u64>().unwrap(),
+                        )
+                    })
+                    .map(|(start, end)| {
+                        expected_size = Some(end - start);
+                        start != uploaded_file_size + 1
+                    })
+                {
+                } else {
+                    return Ok((
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        [
+                            (
+                                header::LOCATION,
+                                format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
+                            ),
+                            (header::CONTENT_LENGTH, 0.to_string()),
+                            (header::RANGE, format!("0-{}", uploaded_file_size - 1)),
+                            (DOCKER_UPLOAD_UUID, upload_uuid_str),
+                        ],
+                    )
+                        .into_response());
+                }
             }
-        }
 
-        let mut size = 0usize;
-        while let Some(chunk) = stream.next().await {
-            let mut chunk = chunk?;
-            while chunk.has_remaining() {
-                size += file.write_buf(&mut chunk).await?;
+            let mut size = 0usize;
+            while let Some(chunk) = stream.next().await {
+                let mut chunk = chunk?;
+                while chunk.has_remaining() {
+                    size += file.write_buf(&mut chunk).await?;
+                }
             }
+            println!("Patch size {}", &size);
+            file.flush().await?;
+            Ok((
+                StatusCode::ACCEPTED,
+                [
+                    (
+                        header::LOCATION,
+                        format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
+                    ),
+                    (header::CONTENT_LENGTH, 0.to_string()),
+                    (
+                        header::RANGE,
+                        format!("0-{}", uploaded_file_size + size as u64 - 1),
+                    ),
+                    (DOCKER_UPLOAD_UUID, upload_uuid_str),
+                ],
+            )
+                .into_response())
         }
-        println!("Patch size {}", &size);
-        file.flush().await?;
-        Ok((
-            StatusCode::ACCEPTED,
-            [
-                (
-                    header::LOCATION,
-                    format!("/v2/{}/blobs/upload/{}", repo_name, upload_uuid_str),
-                ),
-                (header::CONTENT_LENGTH, 0.to_string()),
-                (
-                    header::RANGE,
-                    format!("0-{}", uploaded_file_size + size as u64 - 1),
-                ),
-                (DOCKER_UPLOAD_UUID, upload_uuid_str),
-            ],
-        )
-            .into_response())
+        .await;
+        state.storage.unlock_upload(upload_uuid).await?;
+        res
     }
 
     async fn finalize_upload(
@@ -458,56 +468,69 @@ impl DockerRegistryBackend {
         let digest = params.get("digest").ok_or(DockerError::NoDigest)?;
         let digest_hash = get_digest(digest).ok_or(DockerError::InvalidDigest)?;
 
-        tokio::fs::set_permissions(&upload_path, PermissionsExt::from_mode(0o400)).await?;
+        state.storage.lock_upload(upload_uuid).await?;
+        let mut locked = true;
+        let res = async {
+            tokio::fs::set_permissions(&upload_path, PermissionsExt::from_mode(0o400)).await?;
 
-        let hash = hash_file_sha256(&upload_path).await?;
-        let size = tokio::fs::metadata(&upload_path).await?.len();
+            let hash = hash_file_sha256(&upload_path).await?;
+            let size = tokio::fs::metadata(&upload_path).await?.len();
 
-        if digest_hash != hash {
-            return Ok((
-                StatusCode::NOT_ACCEPTABLE,
-                [(header::CONTENT_LENGTH, 0.to_string())],
+            if digest_hash != hash {
+                return Ok((
+                    StatusCode::NOT_ACCEPTABLE,
+                    [(header::CONTENT_LENGTH, 0.to_string())],
+                )
+                    .into_response());
+            }
+
+            let global_path = state.global_blob_path(&hash);
+            match rename_no_replace(&upload_path, global_path).await {
+                Ok(()) => {
+                    state
+                        .storage
+                        .commit_blob(hash, size.try_into().unwrap(), upload_uuid)
+                        .await?;
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    info!("Blob already exists: {}", digest);
+                    tokio::fs::remove_file(upload_path).await?;
+                    state.storage.remove_upload(upload_uuid).await?;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            locked = false;
+
+            let local_path = state.blob_path(&repo_name, &hash);
+            let rel_path = state.global_rel_blob_path(&hash);
+            match tokio::fs::symlink(rel_path, local_path).await {
+                Ok(()) => {
+                    state.storage.link_blob(hash, &repo_name).await?;
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    info!("Blob already linked: {}", digest);
+                }
+                Err(e) => return Err(e.into()),
+            }
+
+            Ok((
+                StatusCode::CREATED,
+                [
+                    (
+                        header::LOCATION,
+                        format!("/v2/{}/blobs/upload/{}", repo_name, digest),
+                    ),
+                    (header::CONTENT_LENGTH, 0.to_string()),
+                    (DOCKER_CONTENT_DIGEST, digest.clone()),
+                ],
             )
-                .into_response());
+                .into_response())
         }
-
-        let global_path = state.global_blob_path(&hash);
-        match rename_no_replace(&upload_path, global_path).await {
-            Ok(()) => {
-                state
-                    .storage
-                    .commit_blob(&repo_name, hash, size.try_into().unwrap())
-                    .await?;
-            }
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                info!("Blob already exists: {}", digest);
-                tokio::fs::remove_file(upload_path).await?;
-            }
-            Err(e) => return Err(e.into()),
-        };
-
-        let local_path = state.blob_path(&repo_name, &hash);
-        let rel_path = state.global_rel_blob_path(&hash);
-        match tokio::fs::symlink(rel_path, local_path).await {
-            Ok(()) => (),
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                info!("Blob already linked: {}", digest);
-            }
-            Err(e) => return Err(e.into()),
+        .await;
+        if locked {
+            state.storage.unlock_upload(upload_uuid).await?;
         }
-
-        Ok((
-            StatusCode::CREATED,
-            [
-                (
-                    header::LOCATION,
-                    format!("/v2/{}/blobs/upload/{}", repo_name, digest),
-                ),
-                (header::CONTENT_LENGTH, 0.to_string()),
-                (DOCKER_CONTENT_DIGEST, digest.clone()),
-            ],
-        )
-            .into_response())
+        res
     }
 
     async fn check_blob(
@@ -679,7 +702,12 @@ impl DockerRegistryBackend {
 
         let target_path = state.manifest_by_digest_path(&repo_name, &hash);
         match rename_no_replace(&upload_path, &target_path).await {
-            Ok(()) => (),
+            Ok(()) => {
+                state
+                    .storage
+                    .commit_manifest(&repo_name, hash, body_len, media_type, layers)
+                    .await?;
+            }
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                 info!("Blob already exists: {}", &hex_hash);
                 tokio::fs::remove_file(upload_path).await?;
@@ -692,7 +720,12 @@ impl DockerRegistryBackend {
             let rel_main_path = state.manifest_by_digest_rel_path(&repo_name, &hash);
             // Tag should be unique
             match tokio::fs::symlink(&rel_main_path, &tag_path).await {
-                Ok(()) => (),
+                Ok(()) => {
+                    state
+                        .storage
+                        .commit_tag(artifact_uuid, &repo_name, hash)
+                        .await?;
+                }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                     info!("Tag already exists: {}", &hex_hash);
                     let link = tokio::fs::read_link(tag_path).await?;
@@ -703,10 +736,6 @@ impl DockerRegistryBackend {
                 }
                 Err(e) => return Err(e.into()),
             }
-            state
-                .storage
-                .commit_artifact(artifact_uuid, hash, body_len, media_type, layers)
-                .await?;
         }
 
         println!("Hash: {}", &hex_hash);
@@ -917,11 +946,6 @@ impl Backend for DockerRegistryBackend {
             .create(&dir_path)
             .await?;
 
-        self.state
-            .storage
-            .create_artifact_reserve(uuid, class_name)
-            .await?;
-
         Ok(Url::parse(&format!(
             "{}:{}/{}:{}",
             self.state.hostname, self.state.port, class_name, uuid
@@ -931,7 +955,7 @@ impl Backend for DockerRegistryBackend {
 
     async fn commit_artifact(
         &mut self,
-        class_name: &str,
+        _class_name: &str,
         art_type: ArtifactType,
         uuid: Uuid,
     ) -> Result<Vec<ArtifactItemInfo>, Error> {
@@ -939,10 +963,7 @@ impl Backend for DockerRegistryBackend {
             return Err(DockerError::InvalidArtifactType.into());
         }
 
-        self.state
-            .storage
-            .get_artifact_items(class_name, uuid)
-            .await
+        self.state.storage.get_artifact_items(uuid).await
     }
 
     async fn get_artifact(

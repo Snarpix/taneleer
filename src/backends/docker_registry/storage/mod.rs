@@ -13,15 +13,27 @@ pub trait Storage {
     async fn create_class(&self, name: &str) -> Result<()>;
 
     #[must_use]
-    async fn create_artifact_reserve(&self, artifact_uuid: Uuid, class_name: &str) -> Result<()>;
+    async fn create_upload(&self, name: &str, upload_uuid: Uuid) -> Result<()>;
 
     #[must_use]
-    async fn commit_blob(&self, class_name: &str, digest: Sha256, size: i64) -> Result<()>;
+    async fn lock_upload(&self, upload_uuid: Uuid) -> Result<()>;
 
     #[must_use]
-    async fn commit_artifact(
+    async fn unlock_upload(&self, upload_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
+    async fn remove_upload(&self, upload_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
+    async fn commit_blob(&self, digest: Sha256, size: i64, upload_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
+    async fn link_blob(&self, digest: Sha256, class_name: &str) -> Result<()>;
+
+    #[must_use]
+    async fn commit_manifest(
         &self,
-        artifact_uuid: Uuid,
+        class_name: &str,
         manifest_digest: Sha256,
         manifest_size: i64,
         manifest_type: &str,
@@ -29,11 +41,15 @@ pub trait Storage {
     ) -> Result<()>;
 
     #[must_use]
-    async fn get_artifact_items(
+    async fn commit_tag(
         &self,
-        class_name: &str,
         artifact_uuid: Uuid,
-    ) -> Result<Vec<ArtifactItemInfo>>;
+        class_name: &str,
+        manifest_digest: Sha256,
+    ) -> Result<()>;
+
+    #[must_use]
+    async fn get_artifact_items(&self, artifact_uuid: Uuid) -> Result<Vec<ArtifactItemInfo>>;
 }
 
 pub async fn new_storage(path: &PathBuf) -> Result<Box<dyn Storage + Send + Sync>> {
