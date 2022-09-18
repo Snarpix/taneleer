@@ -123,7 +123,7 @@ impl DBusFrontend {
                     "CreateArtifactClass",
                     ("name", "backend", "type"),
                     (),
-                    move |mut ctx, cr, (name, backend_name, art_type): (String, String, String)| {
+                    |mut ctx, cr, (name, backend_name, art_type): (String, String, String)| {
                         let obj = cr
                             .data_mut::<SharedArtifactManager>(ctx.path())
                             .cloned()
@@ -410,7 +410,6 @@ impl DBusFrontend {
                     }
                 });
 
-                //HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
                 b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
                     println!("FindArtifactByUuid");
                     Ok(())
@@ -520,7 +519,7 @@ impl DBusFrontendInner {
         .unwrap();
         match artifact_state {
             ArtifactState::Committed => {
-                cr.remove_interface(path.clone(), self.artifact_iface_token);
+                cr.remove_interface(path.clone(), self.artifact_reserve_iface_token);
                 cr.insert(
                     path,
                     &[self.artifact_iface_token],
@@ -801,7 +800,9 @@ impl DBusFrontendInner {
 
                                 let mut manager = manager.lock().await;
                                 match manager.get_artifact(uuid, proxy).await {
-                                    Ok((reserve_uuid, url)) => Ok((reserve_uuid.to_string(), url)),
+                                    Ok((reserve_uuid, url)) => {
+                                        Ok((reserve_uuid.to_string(), url.to_string()))
+                                    }
                                     Err(e) => {
                                         error!("Failed to get artifact: {:?}", e);
                                         Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")

@@ -23,8 +23,16 @@ pub struct ConfigDBusFrontend {
 }
 
 #[derive(Deserialize)]
+pub struct ConfigWSJsonRPC {
+    pub address: std::net::IpAddr,
+    pub hostname: String,
+    pub port: u16,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
 pub enum ConfigFrontend {
     DBus(ConfigDBusFrontend),
+    WSJsonRPC(ConfigWSJsonRPC),
 }

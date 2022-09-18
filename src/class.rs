@@ -1,11 +1,15 @@
-#[derive(Debug, sqlx::Type)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, sqlx::Type, Serialize, Deserialize)]
 #[sqlx(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ArtifactType {
     File,
     DockerContainer,
 }
 
-#[derive(Copy, Clone, Debug, sqlx::Type)]
+#[derive(Copy, Clone, Debug, sqlx::Type, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(i64)]
 pub enum ArtifactClassState {
     Uninit = 0,
@@ -55,7 +59,7 @@ impl std::fmt::Display for ArtifactType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ArtifactClassData {
     pub backend_name: String,
     pub art_type: ArtifactType,

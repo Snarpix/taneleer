@@ -49,7 +49,11 @@ impl std::error::Error for FsError {}
 
 #[async_trait]
 impl Backend for FsBackend {
-    async fn create_class(&mut self, name: &str, _data: &ArtifactClassData) -> Result<()> {
+    async fn create_class(&mut self, name: &str, data: &ArtifactClassData) -> Result<()> {
+        match data.art_type {
+            ArtifactType::File => (),
+            ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
+        }
         let mut dir_path = self.root_path.clone();
         dir_path.push(name);
         tokio::fs::DirBuilder::new()

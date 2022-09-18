@@ -1,10 +1,15 @@
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use uuid::Uuid;
 
 pub type Sha1 = [u8; 20];
 pub type Sha256 = [u8; 32];
 
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "val", rename_all = "lowercase")]
 pub enum Hashsum {
-    Sha256(Sha256),
+    Sha256(#[serde_as(as = "serde_with::hex::Hex")] Sha256),
 }
 
 #[derive(Debug)]
@@ -34,12 +39,25 @@ impl Hashsum {
     }
 }
 
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SourceType {
-    Url { url: String, hash: Hashsum },
-    Git { repo: String, commit: Sha1 },
-    Artifact { uuid: Uuid },
+    Url {
+        url: String,
+        hash: Hashsum,
+    },
+    Git {
+        repo: String,
+        #[serde_as(as = "serde_with::hex::Hex")]
+        commit: Sha1,
+    },
+    Artifact {
+        uuid: Uuid,
+    },
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Source {
     pub name: String,
     pub source: SourceType,

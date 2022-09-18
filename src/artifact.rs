@@ -1,10 +1,14 @@
+use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteRow, Row};
 use uuid::Uuid;
 
 use crate::{class::ArtifactType, source::Hashsum};
 
-#[derive(Copy, Clone, Debug, sqlx::Type, strum::EnumString, strum::IntoStaticStr)]
+#[derive(
+    Copy, Clone, Debug, sqlx::Type, strum::EnumString, strum::IntoStaticStr, Serialize, Deserialize,
+)]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 #[repr(i64)]
 pub enum ArtifactState {
     Created = 0,
@@ -13,7 +17,7 @@ pub enum ArtifactState {
     Deleted = 3,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct ArtifactData {
     pub class_name: String,
     pub art_type: ArtifactType,
@@ -25,20 +29,21 @@ pub struct ArtifactData {
     pub error: Option<String>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct Artifact {
     pub uuid: Uuid,
     #[sqlx(flatten)]
     pub data: ArtifactData,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Serialize, Deserialize)]
 pub struct ArtifactItem {
     pub uuid: Uuid,
     #[sqlx(flatten)]
     pub info: ArtifactItemInfo,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct ArtifactItemInfo {
     pub id: String,
     pub size: u64,

@@ -2,6 +2,10 @@ frontends:
   - type: dbus
     dbus_name: com.snarpix.taneleer
     bus: session
+  - type: wsjsonrpc
+    address: "::"
+    hostname: host.docker.internal
+    port: 5002
 
 backends:
   fs_test:

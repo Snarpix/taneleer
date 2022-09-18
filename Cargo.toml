@@ -16,13 +16,14 @@ async-trait = "0.1.57"
 tokio = { version = "1.21.0", features = ["full"] }
 tokio-stream = { version = "0.1.9", features = ["sync"] }
 tokio-util = { version = "0.7.4", features = ["io"] }
+tokio-tungstenite = "0.17.2"
 sqlx = { version = "0.6.1", features = ["sqlite", "runtime-tokio-native-tls", "uuid"] }
 serde = "1.0.144"
-serde_with = "2.0.1"
+serde_with = { version = "2.0.1", features = ["hex"] }
 serde_derive = "1.0.144"
 serde_yaml = "0.9.11"
 serde_json = "1.0.85"
-uuid = { version = "1.1.2", features = ["v4", "fast-rng", "macro-diagnostics"] }
+uuid = { version = "1.1.2", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
 hex = "0.4.3"
 url = "2.3.1"
 log = { version = "0.4.17", features = ["max_level_trace", "release_max_level_info"] }

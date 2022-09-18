@@ -215,7 +215,7 @@ impl ArtifactManager {
         &mut self,
         artifact_uuid: Uuid,
         proxy: Option<String>,
-    ) -> Result<(Uuid, String)> {
+    ) -> Result<(Uuid, Url)> {
         let (artifact_usage_uuid, class_name, backend_name, artifact_type) =
             self.storage.get_artifact(artifact_uuid).await?;
         let res = async {
@@ -229,7 +229,7 @@ impl ArtifactManager {
         }
         .await;
         match res {
-            Ok(url) => Ok((artifact_usage_uuid, url.to_string())),
+            Ok(url) => Ok((artifact_usage_uuid, url)),
             Err(e) => {
                 self.storage
                     .release_artifact_usage(artifact_usage_uuid)
