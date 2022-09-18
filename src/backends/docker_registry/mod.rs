@@ -709,7 +709,7 @@ impl DockerRegistryBackend {
                     .await?;
             }
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                info!("Blob already exists: {}", &hex_hash);
+                info!("Manifest already exists: {}", &hex_hash);
                 tokio::fs::remove_file(upload_path).await?;
             }
             Err(e) => return Err(e.into()),

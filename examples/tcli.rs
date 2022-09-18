@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
-use clap::{Parser, Subcommand};
+use clap::{builder::ArgAction, ArgMatches, Parser, Subcommand};
 use comfy_table::*;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use dbus::arg::{RefArg, Variant};
@@ -10,6 +10,42 @@ fn get_artifact_manager_proxy(conn: &Connection) -> Proxy<&Connection> {
     conn.with_proxy(
         "com.snarpix.taneleer",
         "/com/snarpix/taneleer/ArtifactManager",
+        Duration::from_millis(5000),
+    )
+}
+
+fn get_artifact_class_proxy<'a>(
+    conn: &'a Connection,
+    class_name: &str,
+) -> Proxy<'a, &'a Connection> {
+    conn.with_proxy(
+        "com.snarpix.taneleer",
+        format!("/com/snarpix/taneleer/Classes/{}", class_name),
+        Duration::from_millis(5000),
+    )
+}
+
+fn get_artifact_reserve_proxy<'a>(
+    conn: &'a Connection,
+    artifact_uuid: &str,
+) -> Proxy<'a, &'a Connection> {
+    conn.with_proxy(
+        "com.snarpix.taneleer",
+        format!(
+            "/com/snarpix/taneleer/Artifacts/{}",
+            artifact_uuid.to_string().replace('-', "_")
+        ),
+        Duration::from_millis(5000),
+    )
+}
+
+fn get_artifact_proxy<'a>(conn: &'a Connection, artifact_uuid: &str) -> Proxy<'a, &'a Connection> {
+    conn.with_proxy(
+        "com.snarpix.taneleer",
+        format!(
+            "/com/snarpix/taneleer/Artifacts/{}",
+            artifact_uuid.to_string().replace('-', "_")
+        ),
         Duration::from_millis(5000),
     )
 }
@@ -62,6 +98,14 @@ enum MainCommands {
 #[derive(Subcommand)]
 enum ClassCommands {
     List,
+    Create {
+        #[clap(value_parser)]
+        name: String,
+        #[clap(value_parser)]
+        backend_name: String,
+        #[clap(value_parser)]
+        art_type: String,
+    },
 }
 
 fn do_class_cmd(conn: &Connection, cmd: &ClassCommands) {
@@ -89,12 +133,55 @@ fn do_class_cmd(conn: &Connection, cmd: &ClassCommands) {
             }
             println!("{table}");
         }
+        ClassCommands::Create {
+            name,
+            backend_name,
+            art_type,
+        } => {
+            let () = get_artifact_manager_proxy(conn)
+                .method_call(
+                    "com.snarpix.taneleer.ArtifactManager",
+                    "CreateArtifactClass",
+                    (name, backend_name, art_type),
+                )
+                .unwrap();
+        }
     }
 }
 
 #[derive(Subcommand)]
 enum ArtifactCommands {
     List,
+    Reserve {
+        class_name: String,
+        #[clap(long)]
+        proxy: Option<String>,
+        #[clap(long)]
+        src: Vec<String>,
+        #[clap(long)]
+        tag: Vec<String>,
+    },
+    Commit {
+        artifact_uuid: String,
+        #[clap(long)]
+        tag: Vec<String>,
+    },
+    Use {
+        artifact_uuid: String,
+        #[clap(long)]
+        proxy: Option<String>,
+    },
+}
+
+fn parse_tags(tag: &Vec<String>) -> Vec<(String, String)> {
+    let mut tags = Vec::new();
+    for t in tag {
+        let mut t = t.split(':');
+        let tag = t.next().unwrap();
+        let value = t.next().unwrap_or("");
+        tags.push((tag.to_owned(), value.to_owned()));
+    }
+    tags
 }
 
 fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
@@ -146,6 +233,70 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
                 ]);
             }
             println!("{table}");
+        }
+        ArtifactCommands::Reserve {
+            class_name,
+            proxy,
+            src,
+            tag,
+        } => {
+            let mut srcs: HashMap<String, (String, Variant<Box<dyn RefArg>>)> = HashMap::new();
+            for s in src {
+                let mut s = s.split(',');
+                let name = s.next().unwrap();
+                let src_type = s.next().unwrap();
+                match src_type {
+                    "url" | "git" => {
+                        let url = s.next().unwrap();
+                        let hash = s.next().unwrap();
+                        srcs.insert(
+                            name.to_owned(),
+                            (
+                                src_type.to_owned(),
+                                Variant(Box::new((url.to_owned(), hash.to_owned()))),
+                            ),
+                        );
+                    }
+                    "artifact" => {
+                        let uuid = s.next().unwrap();
+                        srcs.insert(
+                            name.to_owned(),
+                            (src_type.to_owned(), Variant(Box::new(uuid.to_owned()))),
+                        );
+                    }
+                    _ => {
+                        panic!("Invalid src type: {}", src_type);
+                    }
+                }
+            }
+            let tags = parse_tags(tag);
+            let (uuid, url): (String, String) = get_artifact_class_proxy(conn, &class_name)
+                .method_call(
+                    "com.snarpix.taneleer.ArtifactClass",
+                    "Reserve",
+                    (proxy.as_deref().unwrap_or(""), srcs, tags),
+                )
+                .unwrap();
+            println!("{}", uuid);
+            println!("{}", url);
+        }
+        ArtifactCommands::Commit { artifact_uuid, tag } => {
+            let tags = parse_tags(tag);
+            let () = get_artifact_reserve_proxy(conn, &artifact_uuid)
+                .method_call("com.snarpix.taneleer.ArtifactReserve", "Commit", (tags,))
+                .unwrap();
+        }
+        ArtifactCommands::Use {
+            artifact_uuid,
+            proxy,
+        } => {
+            let () = get_artifact_proxy(conn, &artifact_uuid)
+                .method_call(
+                    "com.snarpix.taneleer.Artifact",
+                    "Get",
+                    (proxy.as_deref().unwrap_or(""),),
+                )
+                .unwrap();
         }
     }
 }

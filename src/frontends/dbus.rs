@@ -456,7 +456,7 @@ impl DBusFrontendInner {
 
     fn add_artifact_class(&self, class_name: String) {
         self.cr.lock().unwrap().insert(
-            dbus::Path::new(format!("/com/snarpix/taneleer/Artifacts/{}", class_name)).unwrap(),
+            dbus::Path::new(format!("/com/snarpix/taneleer/Classes/{}", class_name)).unwrap(),
             &[self.class_iface_token],
             ArtifactClass {
                 name: class_name,
@@ -471,8 +471,7 @@ impl DBusFrontendInner {
             ArtifactState::Committed => {
                 cr.insert(
                     dbus::Path::new(format!(
-                        "/com/snarpix/taneleer/Artifacts/{}/{}",
-                        class_name,
+                        "/com/snarpix/taneleer/Artifacts/{}",
                         artifact_uuid.to_string().replace('-', "_")
                     ))
                     .unwrap(),
@@ -487,8 +486,7 @@ impl DBusFrontendInner {
             ArtifactState::Reserved => {
                 cr.insert(
                     dbus::Path::new(format!(
-                        "/com/snarpix/taneleer/Artifacts/{}/{}",
-                        class_name,
+                        "/com/snarpix/taneleer/Artifacts/{}",
                         artifact_uuid.to_string().replace('-', "_")
                     ))
                     .unwrap(),
@@ -512,8 +510,7 @@ impl DBusFrontendInner {
     ) {
         let mut cr = self.cr.lock().unwrap();
         let path = dbus::Path::new(format!(
-            "/com/snarpix/taneleer/Artifacts/{}/{}",
-            class_name,
+            "/com/snarpix/taneleer/Artifacts/{}",
             artifact_uuid.to_string().replace('-', "_")
         ))
         .unwrap();
@@ -547,14 +544,13 @@ impl DBusFrontendInner {
 
     fn remove_artifact(
         &self,
-        class_name: String,
+        _class_name: String,
         artifact_uuid: Uuid,
         _artifact_state: ArtifactState,
     ) {
         self.cr.lock().unwrap().remove::<Artifact>(
             &dbus::Path::new(format!(
-                "/com/snarpix/taneleer/Artifacts/{}/{}",
-                class_name,
+                "/com/snarpix/taneleer/Artifacts/{}",
                 artifact_uuid.to_string().replace('-', "_")
             ))
             .unwrap(),
