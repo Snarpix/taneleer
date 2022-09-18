@@ -38,7 +38,15 @@ pub async fn rename_no_replace(
     match tokio::task::spawn_blocking(move || {
         let old = cstr(&from)?;
         let new = cstr(&to)?;
-        match unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) } {
+        match unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                old.as_ptr(),
+                libc::AT_FDCWD,
+                new.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        } {
             0 => Ok(()),
             _ => Err(std::io::Error::last_os_error()),
         }
