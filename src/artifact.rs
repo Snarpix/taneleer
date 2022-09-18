@@ -11,6 +11,7 @@ use crate::{class::ArtifactType, source::Hashsum};
 #[serde(rename_all = "snake_case")]
 #[repr(i64)]
 pub enum ArtifactState {
+    Removed = -1,
     Created = 0,
     Reserved = 1,
     Committed = 2,

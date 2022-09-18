@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
-use clap::{builder::ArgAction, ArgMatches, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use comfy_table::*;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use dbus::arg::{RefArg, Variant};
@@ -161,6 +161,9 @@ enum ArtifactCommands {
         #[clap(long)]
         tag: Vec<String>,
     },
+    Abort {
+        artifact_uuid: String,
+    },
     Commit {
         artifact_uuid: String,
         #[clap(long)]
@@ -279,6 +282,11 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
                 .unwrap();
             println!("{}", uuid);
             println!("{}", url);
+        }
+        ArtifactCommands::Abort { artifact_uuid } => {
+            let () = get_artifact_reserve_proxy(conn, &artifact_uuid)
+                .method_call("com.snarpix.taneleer.ArtifactReserve", "Abort", ())
+                .unwrap();
         }
         ArtifactCommands::Commit { artifact_uuid, tag } => {
             let tags = parse_tags(tag);

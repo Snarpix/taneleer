@@ -572,6 +572,95 @@ VALUES ((SELECT id FROM artifacts WHERE uuid = ?1), ?2, ?3);
         Ok(())
     }
 
+    #[must_use]
+    async fn begin_reserve_abort(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(String, String, ArtifactType)> {
+        let mut t = self.pool.begin().await?;
+        let (artifact_id, artifact_class_name, backend_name, artifact_type): (
+            i64,
+            String,
+            String,
+            ArtifactType,
+        ) = sqlx::query_as(
+            r#"
+SELECT A.id, AC.name, AC.backend, AC.artifact_type
+    FROM artifacts AS A
+    JOIN artifact_classes AS AC ON A.class_id = AC.id
+    WHERE A.uuid = ?1 AND A.state = ?2 AND A.next_state IS NULL;"#,
+        )
+        .bind(artifact_uuid)
+        .bind(ArtifactState::Reserved)
+        .fetch_one(&mut t)
+        .await?;
+        let rows = sqlx::query(r#"UPDATE artifacts SET next_state = ?1 WHERE id = ?2 AND state = ?3 AND next_state IS NULL;"#)
+            .bind(ArtifactState::Removed)
+            .bind(artifact_id)
+            .bind(ArtifactState::Reserved)
+            .execute(&mut t)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+        t.commit().await?;
+        Ok((artifact_class_name, backend_name, artifact_type))
+    }
+
+    #[must_use]
+    async fn commit_reserve_abort(&mut self, artifact_uuid: Uuid) -> Result<()> {
+        let mut t = self.pool.begin().await?;
+
+        let artifact_id = sqlx::query_scalar::<_, i64>(
+            r#"SELECT id FROM artifacts WHERE uuid = ?1 AND state = ?2 AND next_state = ?3;"#,
+        )
+        .bind(artifact_uuid)
+        .bind(ArtifactState::Reserved)
+        .bind(ArtifactState::Removed)
+        .fetch_one(&mut t)
+        .await?;
+
+        sqlx::query(r#"DELETE FROM internal_sources WHERE artifact_id = ?1;"#)
+            .bind(artifact_id)
+            .execute(&mut t)
+            .await?;
+        sqlx::query(r#"DELETE FROM external_sources WHERE artifact_id = ?1;"#)
+            .bind(artifact_id)
+            .execute(&mut t)
+            .await?;
+        sqlx::query(r#"DELETE FROM artifact_tags WHERE artifact_id = ?1;"#)
+            .bind(artifact_id)
+            .execute(&mut t)
+            .await?;
+        let rows = sqlx::query(r#"DELETE FROM artifacts WHERE id = ?1;"#)
+            .bind(artifact_id)
+            .execute(&mut t)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+        t.commit().await?;
+        Ok(())
+    }
+
+    #[must_use]
+    async fn fail_reserve_abort(&mut self, artifact_uuid: Uuid, error: &str) -> Result<()> {
+        let rows = sqlx::query(r#"UPDATE artifacts SET error = ?1 WHERE uuid = ?2 AND state = ?3 AND next_state = ?4;"#)
+            .bind(error)
+            .bind(artifact_uuid)
+            .bind(ArtifactState::Reserved)
+            .bind(ArtifactState::Removed)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if rows != 1 {
+            return Err(SqliteError::NotFound.into());
+        }
+        Ok(())
+    }
+
     async fn begin_artifact_commit(
         &mut self,
         artifact_uuid: Uuid,
@@ -688,9 +777,9 @@ VALUES (?1, ?2, ?3, "sha256", ?4);
         Ok(())
     }
 
-    async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid) -> Result<()> {
+    async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid, error: &str) -> Result<()> {
         let rows = sqlx::query(r#"UPDATE artifacts SET error = ?1 WHERE uuid = ?2 AND state = ?3 AND next_state = ?4;"#)
-            .bind("commit_failed: none")
+            .bind(error)
             .bind(artifact_uuid)
             .bind(ArtifactState::Reserved)
             .bind(ArtifactState::Committed)

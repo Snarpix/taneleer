@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use log::info;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
@@ -389,7 +390,18 @@ INSERT INTO artifact_tags(tag, class_id, manifest_id, create_time)
         Ok(())
     }
 
-    #[must_use]
+    async fn remove_tag_if_exists(&self, artifact_uuid: Uuid) -> Result<()> {
+        let rows = sqlx::query(r#"DELETE FROM artifact_tags WHERE tag = ?1;"#)
+            .bind(artifact_uuid)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        if rows != 0 {
+            info!("Removed tag: {}", artifact_uuid);
+        }
+        Ok(())
+    }
+
     async fn get_artifact_items(&self, artifact_uuid: Uuid) -> Result<Vec<ArtifactItemInfo>> {
         let mut t = self.pool.begin().await?;
         let (manifest_id, mani_digest, mani_size): (i64, Vec<u8>, i64) = sqlx::query_as(

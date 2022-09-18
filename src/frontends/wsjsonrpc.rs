@@ -157,7 +157,6 @@ impl WSFrontend {
         handlers.insert("get_items", get_items);
         handlers.insert("get_tags", get_tags);
         handlers.insert("get_usages", get_usages);
-        handlers.insert("find_artifact_by_uuid", find_artifact_by_uuid);
         handlers.insert("reserve_artifact", reserve_artifact);
         handlers.insert("commit_artifact", commit_artifact);
         handlers.insert("abort_reserve", abort_reserve);
@@ -364,10 +363,6 @@ async fn get_usages((): (), manager: SharedArtifactManager) -> RpcResult {
             data: None,
         },
     }
-}
-
-async fn find_artifact_by_uuid((): (), _manager: SharedArtifactManager) -> RpcResult {
-    todo!()
 }
 
 #[derive(Deserialize)]

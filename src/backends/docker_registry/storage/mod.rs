@@ -49,6 +49,9 @@ pub trait Storage {
     ) -> Result<()>;
 
     #[must_use]
+    async fn remove_tag_if_exists(&self, artifact_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
     async fn get_artifact_items(&self, artifact_uuid: Uuid) -> Result<Vec<ArtifactItemInfo>>;
 }
 

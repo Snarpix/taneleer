@@ -116,6 +116,20 @@ impl Backend for FsBackend {
         res
     }
 
+    async fn abort_reserve(
+        &mut self,
+        class_name: &str,
+        _art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<()> {
+        let uuid_str = uuid.to_string();
+        let mut dir_path = self.root_path.clone();
+        dir_path.push(class_name);
+        dir_path.push(uuid_str);
+        tokio::fs::remove_dir_all(dir_path).await?;
+        Ok(())
+    }
+
     async fn commit_artifact(
         &mut self,
         class_name: &str,

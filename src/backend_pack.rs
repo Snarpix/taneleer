@@ -45,6 +45,15 @@ impl BackendPack {
         }
     }
 
+    pub async fn abort_reserve(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<()> {
+        self.backend.abort_reserve(class_name, art_type, uuid).await
+    }
+
     pub async fn commit_artifact(
         &mut self,
         class_name: &str,

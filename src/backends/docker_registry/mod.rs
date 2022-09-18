@@ -855,6 +855,7 @@ pub enum DockerError {
     NoDigest,
     InvalidDigest,
     InvalidArtifactType,
+    EmptyCommit,
 }
 
 impl std::fmt::Display for DockerError {
@@ -953,6 +954,24 @@ impl Backend for DockerRegistryBackend {
         .unwrap())
     }
 
+    async fn abort_reserve(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<(), Error> {
+        if !matches!(art_type, ArtifactType::DockerContainer) {
+            return Err(DockerError::InvalidArtifactType.into());
+        }
+
+        self.state.storage.remove_tag_if_exists(uuid).await?;
+        let mut dir_path = self.state.manifest_by_uuid_tag_path(class_name, &uuid);
+        dir_path.pop();
+        tokio::fs::remove_dir_all(dir_path).await?;
+
+        Ok(())
+    }
+
     async fn commit_artifact(
         &mut self,
         _class_name: &str,
@@ -963,7 +982,12 @@ impl Backend for DockerRegistryBackend {
             return Err(DockerError::InvalidArtifactType.into());
         }
 
-        self.state.storage.get_artifact_items(uuid).await
+        let res = self.state.storage.get_artifact_items(uuid).await?;
+        if res.is_empty() {
+            Err(DockerError::EmptyCommit.into())
+        } else {
+            Ok(res)
+        }
     }
 
     async fn get_artifact(

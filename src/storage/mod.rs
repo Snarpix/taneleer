@@ -66,6 +66,18 @@ pub trait Storage {
     async fn rollback_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()>;
 
     #[must_use]
+    async fn begin_reserve_abort(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(String, String, ArtifactType)>;
+
+    #[must_use]
+    async fn commit_reserve_abort(&mut self, artifact_uuid: Uuid) -> Result<()>;
+
+    #[must_use]
+    async fn fail_reserve_abort(&mut self, artifact_uuid: Uuid, error: &str) -> Result<()>;
+
+    #[must_use]
     async fn begin_artifact_commit(
         &mut self,
         artifact_uuid: Uuid,
@@ -80,7 +92,7 @@ pub trait Storage {
     ) -> Result<()>;
 
     #[must_use]
-    async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid) -> Result<()>;
+    async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid, error: &str) -> Result<()>;
 
     #[must_use]
     async fn get_artifact(

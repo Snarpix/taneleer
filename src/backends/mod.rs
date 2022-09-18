@@ -26,6 +26,14 @@ pub trait Backend {
     ) -> Result<Url>;
 
     #[must_use]
+    async fn abort_reserve(
+        &mut self,
+        class_name: &str,
+        art_type: ArtifactType,
+        uuid: Uuid,
+    ) -> Result<()>;
+
+    #[must_use]
     async fn commit_artifact(
         &mut self,
         class_name: &str,

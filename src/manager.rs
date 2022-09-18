@@ -201,14 +201,46 @@ impl ArtifactManager {
                 Ok(())
             }
             Err(e) => {
-                self.storage.fail_artifact_commit(artifact_uuid).await?;
+                self.storage
+                    .fail_artifact_commit(artifact_uuid, &format!("{:?}", e))
+                    .await?;
                 Err(e)
             }
         }
     }
 
-    pub async fn abort_artifact_reserve(&mut self, _artifact_uuid: Uuid) -> Result<()> {
-        todo!();
+    pub async fn abort_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
+        let (class_name, backend_name, artifact_type) =
+            self.storage.begin_reserve_abort(artifact_uuid).await?;
+        let res = async {
+            let backend = self
+                .backends
+                .get_mut(&backend_name)
+                .ok_or(ManagerError::BackendNotExists)?;
+            backend
+                .abort_reserve(&class_name, artifact_type, artifact_uuid)
+                .await
+        }
+        .await;
+        match res {
+            Ok(()) => {
+                self.storage.commit_reserve_abort(artifact_uuid).await?;
+                self.message_broadcast
+                    .send(ManagerMessage::RemoveArtifact(
+                        class_name,
+                        artifact_uuid,
+                        ArtifactState::Reserved,
+                    ))
+                    .ok();
+                Ok(())
+            }
+            Err(e) => {
+                self.storage
+                    .fail_reserve_abort(artifact_uuid, &format!("{:?}", e))
+                    .await?;
+                Err(e)
+            }
+        }
     }
 
     pub async fn get_artifact(

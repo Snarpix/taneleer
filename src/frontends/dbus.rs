@@ -409,11 +409,6 @@ impl DBusFrontend {
                         }))
                     }
                 });
-
-                b.method("FindArtifactByUuid", (), (), move |_, _obj, _: ()| {
-                    println!("FindArtifactByUuid");
-                    Ok(())
-                });
             },
         )
     }
