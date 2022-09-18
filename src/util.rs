@@ -28,7 +28,31 @@ fn cstr(path: &Path) -> std::io::Result<CString> {
 }
 
 #[cfg(target_os = "linux")]
-fn rename_no_replace() {}
+pub async fn rename_no_replace(
+    from: impl AsRef<Path>,
+    to: impl AsRef<Path>,
+) -> std::io::Result<()> {
+    let from = from.as_ref().to_owned();
+    let to = to.as_ref().to_owned();
+
+    match tokio::task::spawn_blocking(move || {
+        let old = cstr(&from)?;
+        let new = cstr(&to)?;
+        match unsafe { libc::renameat2(libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) } {
+            0 => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
+        }
+    })
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "background task failed",
+        )),
+    }
+}
 
 #[cfg(target_os = "macos")]
 pub async fn rename_no_replace(
