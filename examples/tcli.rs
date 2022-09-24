@@ -174,6 +174,15 @@ enum ArtifactCommands {
         #[clap(long)]
         proxy: Option<String>,
     },
+    Last {
+        class_name: String,
+        proxy: Option<String>,
+        #[clap(long)]
+        src: Vec<String>,
+        #[clap(long)]
+        tag: Vec<String>,
+        no_use: bool,
+    },
 }
 
 fn parse_tags(tag: &Vec<String>) -> Vec<(String, String)> {
@@ -185,6 +194,39 @@ fn parse_tags(tag: &Vec<String>) -> Vec<(String, String)> {
         tags.push((tag.to_owned(), value.to_owned()));
     }
     tags
+}
+
+fn parse_srcs(src: &Vec<String>) -> HashMap<String, (String, Variant<Box<dyn RefArg>>)> {
+    let mut srcs: HashMap<String, (String, Variant<Box<dyn RefArg>>)> = HashMap::new();
+    for s in src {
+        let mut s = s.split(',');
+        let name = s.next().unwrap();
+        let src_type = s.next().unwrap();
+        match src_type {
+            "url" | "git" => {
+                let url = s.next().unwrap();
+                let hash = s.next().unwrap();
+                srcs.insert(
+                    name.to_owned(),
+                    (
+                        src_type.to_owned(),
+                        Variant(Box::new((url.to_owned(), hash.to_owned()))),
+                    ),
+                );
+            }
+            "artifact" => {
+                let uuid = s.next().unwrap();
+                srcs.insert(
+                    name.to_owned(),
+                    (src_type.to_owned(), Variant(Box::new(uuid.to_owned()))),
+                );
+            }
+            _ => {
+                panic!("Invalid src type: {}", src_type);
+            }
+        }
+    }
+    srcs
 }
 
 fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
@@ -243,41 +285,13 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
             src,
             tag,
         } => {
-            let mut srcs: HashMap<String, (String, Variant<Box<dyn RefArg>>)> = HashMap::new();
-            for s in src {
-                let mut s = s.split(',');
-                let name = s.next().unwrap();
-                let src_type = s.next().unwrap();
-                match src_type {
-                    "url" | "git" => {
-                        let url = s.next().unwrap();
-                        let hash = s.next().unwrap();
-                        srcs.insert(
-                            name.to_owned(),
-                            (
-                                src_type.to_owned(),
-                                Variant(Box::new((url.to_owned(), hash.to_owned()))),
-                            ),
-                        );
-                    }
-                    "artifact" => {
-                        let uuid = s.next().unwrap();
-                        srcs.insert(
-                            name.to_owned(),
-                            (src_type.to_owned(), Variant(Box::new(uuid.to_owned()))),
-                        );
-                    }
-                    _ => {
-                        panic!("Invalid src type: {}", src_type);
-                    }
-                }
-            }
+            let srcs = parse_srcs(src);
             let tags = parse_tags(tag);
             let (uuid, url): (String, String) = get_artifact_class_proxy(conn, &class_name)
                 .method_call(
                     "com.snarpix.taneleer.ArtifactClass",
                     "Reserve",
-                    (proxy.as_deref().unwrap_or(""), srcs, tags),
+                    (srcs, tags, proxy.as_deref().unwrap_or("")),
                 )
                 .unwrap();
             println!("{}", uuid);
@@ -305,6 +319,37 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
                     (proxy.as_deref().unwrap_or(""),),
                 )
                 .unwrap();
+        }
+        ArtifactCommands::Last {
+            class_name,
+            proxy,
+            src,
+            tag,
+            no_use,
+        } => {
+            let tags = parse_tags(tag);
+            let srcs = parse_srcs(src);
+            if *no_use {
+                let () = get_artifact_class_proxy(conn, &class_name)
+                    .method_call(
+                        "com.snarpix.taneleer.ArtifactClass",
+                        "FindLast",
+                        (proxy.as_deref().unwrap_or(""), srcs, tags),
+                    )
+                    .unwrap();
+            } else {
+                let (reserve_uuid, artifact_uuid, url): (String, String, String) =
+                    get_artifact_class_proxy(conn, &class_name)
+                        .method_call(
+                            "com.snarpix.taneleer.ArtifactClass",
+                            "GetLast",
+                            (srcs, tags, proxy.as_deref().unwrap_or("")),
+                        )
+                        .unwrap();
+                println!("{}", reserve_uuid);
+                println!("{}", artifact_uuid);
+                println!("{}", url);
+            }
         }
     }
 }

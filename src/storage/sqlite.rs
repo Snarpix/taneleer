@@ -1,5 +1,10 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
+use log::error;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::Either;
 use uuid::Uuid;
 
 use super::Storage;
@@ -17,6 +22,7 @@ pub enum SqliteError {
     InvalidArtifactType,
     InvalidExternalSourceType,
     InvalidHashType,
+    InvalidEither,
 }
 
 impl std::fmt::Display for SqliteError {
@@ -140,7 +146,8 @@ CREATE TABLE external_sources(
     type TEXT NOT NULL,
     url TEXT NOT NULL,
     hash_type TEXT NOT NULL,
-    hash BLOB NOT NULL
+    hash BLOB NOT NULL,
+    UNIQUE(artifact_id, name)
 ) STRICT;
         "#,
         )
@@ -161,7 +168,8 @@ CREATE TABLE internal_sources(
     id INTEGER PRIMARY KEY,
     artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
     name TEXT NOT NULL,
-    source_artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    source_artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+    UNIQUE(artifact_id, name)
 ) STRICT;
         "#,
         )
@@ -203,10 +211,11 @@ DROP TABLE IF EXISTS artifact_tags;
         sqlx::query(
             r#"
 CREATE TABLE artifact_tags(
+    id INTEGER PRIMARY KEY,
     artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
     name TEXT NOT NULL,
     value TEXT,
-    UNIQUE(artifact_id, name)
+    UNIQUE(name, artifact_id)
 ) STRICT;
         "#,
         )
@@ -224,6 +233,7 @@ DROP TABLE IF EXISTS artifact_usage;
         sqlx::query(
             r#"
 CREATE TABLE artifact_usage(
+    id INTEGER PRIMARY KEY,
     artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
     uuid BLOB NOT NULL UNIQUE CHECK (LENGTH(uuid) = 16),
     reserve_time INTEGER NOT NULL
@@ -271,7 +281,7 @@ impl Storage for SqliteStorage {
     async fn remove_uninit_class(&mut self, name: &str) -> Result<()> {
         let rows = sqlx::query(r#"DELETE FROM artifact_classes WHERE name = ?1 AND state = ?2;"#)
             .bind(name)
-            .bind(ArtifactClassState::Init)
+            .bind(ArtifactClassState::Uninit)
             .execute(&self.pool)
             .await?
             .rows_affected();
@@ -847,5 +857,198 @@ VALUES (?1, ?2, UNIXEPOCH());
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn get_last_artifact(
+        &mut self,
+        class_name: &str,
+        sources: &[Source],
+        tags: &[Tag],
+    ) -> Result<(Uuid, Uuid, String, ArtifactType)> {
+        let mut t = self.pool.begin().await?;
+
+        let (class_id, backend_name, artifact_type): (i64, String, ArtifactType) = sqlx::query_as(
+            r#"
+                SELECT id, backend, artifact_type FROM artifact_classes
+                    WHERE name = ?1 AND state = ?2;"#,
+        )
+        .bind(class_name)
+        .bind(ArtifactClassState::Init)
+        .fetch_one(&mut t)
+        .await?;
+
+        let mut res = None;
+
+        for Tag { name, value } in tags {
+            let first = res.is_none();
+            let item = res.get_or_insert_with(|| HashMap::new());
+            let mut stream = sqlx::query_as::<_, (i64, i64)>(
+                r#"
+                SELECT A.id, A.commit_time FROM artifacts AS A 
+                    JOIN artifact_tags AS AT ON A.id = AT.artifact_id
+                    WHERE AT.name = ?1
+                        AND ((?2 IS NULL) OR (AT.value = ?2))
+                        AND A.class_id = ?3
+                        AND A.state = ?4 AND A.next_state IS NULL;"#,
+            )
+            .bind(name)
+            .bind(value)
+            .bind(class_id)
+            .bind(ArtifactState::Committed)
+            .fetch(&mut t);
+            if first {
+                while let Some((artifact_id, commit_time)) = stream.try_next().await? {
+                    if item
+                        .insert(artifact_id, (1u64, 0u64, commit_time))
+                        .is_some()
+                    {
+                        panic!("Duplicate tag")
+                    }
+                }
+            } else {
+                while let Some((artifact_id, _)) = stream.try_next().await? {
+                    if let Some(item) = item.get_mut(&artifact_id) {
+                        item.0 += 1;
+                    }
+                }
+            }
+        }
+
+        for Source { name, source } in sources {
+            let first = res.is_none();
+            let item = res.get_or_insert_with(|| HashMap::new());
+            let mut stream = match source {
+                SourceType::Artifact { uuid } => sqlx::query_as::<_, (i64, i64)>(
+                    r#"
+                    SELECT A.id, A.commit_time FROM artifacts AS A 
+                        JOIN internal_sources AS InS ON A.id = InS.artifact_id
+                        JOIN artifacts AS TA ON InS.source_artifact_id = TA.id
+                        WHERE TA.uuid = ?1
+                            AND InS.name = ?2
+                            AND A.class_id = ?3
+                            AND A.state = ?4 AND A.next_state IS NULL;"#,
+                )
+                .bind(uuid)
+                .bind(name)
+                .bind(class_id)
+                .bind(ArtifactState::Committed)
+                .fetch(&mut t),
+                SourceType::Url { url, hash } => {
+                    let Hashsum::Sha256(hash) = hash;
+                    sqlx::query_as::<_, (i64, i64)>(
+                        r#"
+                        SELECT A.id, A.commit_time FROM artifacts AS A 
+                            JOIN external_sources AS ES ON A.id = ES.artifact_id
+                            WHERE ES.hash = ?1
+                                AND ES.url = ?2
+                                AND ES.name = ?3
+                                AND ES.type = "url"
+                                AND ES.hash_type = "sha256"
+                                AND A.class_id = ?4
+                                AND A.state = ?5 AND A.next_state IS NULL;"#,
+                    )
+                    .bind(hash.as_ref())
+                    .bind(url)
+                    .bind(name)
+                    .bind(class_id)
+                    .bind(ArtifactState::Committed)
+                    .fetch(&mut t)
+                }
+                SourceType::Git { repo, commit } => sqlx::query_as::<_, (i64, i64)>(
+                    r#"
+                    SELECT A.id, A.commit_time FROM artifacts AS A 
+                        JOIN external_sources AS ES ON A.id = ES.artifact_id
+                        WHERE ES.hash = ?1
+                            AND ES.url = ?2
+                            AND ES.name = ?3
+                            AND ES.type = "git"
+                            AND ES.hash_type = "sha1"
+                            AND A.class_id = ?4
+                            AND A.state = ?5 AND A.next_state IS NULL;"#,
+                )
+                .bind(commit.as_ref())
+                .bind(repo)
+                .bind(name)
+                .bind(class_id)
+                .bind(ArtifactState::Committed)
+                .fetch(&mut t),
+            };
+            if first {
+                while let Some((artifact_id, commit_time)) = stream.try_next().await? {
+                    if item
+                        .insert(artifact_id, (0u64, 1u64, commit_time))
+                        .is_some()
+                    {
+                        panic!("Duplicate src")
+                    }
+                }
+            } else {
+                while let Some((artifact_id, _)) = stream.try_next().await? {
+                    if let Some(item) = item.get_mut(&artifact_id) {
+                        item.1 += 1;
+                    }
+                }
+            }
+        }
+
+        let resulting_id = match res {
+            None => {
+                sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT id FROM artifacts
+                        WHERE class_id = ?1 AND state = ?2 AND next_state IS NULL
+                        ORDER BY commit_time DESC
+                        LIMIT 1;"#,
+                )
+                .bind(class_id)
+                .bind(ArtifactState::Committed)
+                .fetch_one(&mut t)
+                .await?
+            }
+            Some(res) => {
+                let mut max = i64::MIN;
+                let mut max_id = None;
+                for (artifact_id, (tag_count, src_count, commited_time)) in res {
+                    if tag_count == tags.len() as u64 && src_count == sources.len() as u64 {
+                        if commited_time >= max {
+                            max = commited_time;
+                            max_id = Some(artifact_id);
+                        }
+                    }
+                }
+                if let Some(id) = max_id {
+                    id
+                } else {
+                    return Err(SqliteError::NotFound.into());
+                }
+            }
+        };
+
+        let artifact_uuid =
+            sqlx::query_scalar::<_, Uuid>(r#"SELECT uuid FROM artifacts WHERE id = ?1"#)
+                .bind(resulting_id)
+                .fetch_one(&mut t)
+                .await?;
+
+        let artifact_use_uuid = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO artifact_usage(artifact_id, uuid, reserve_time) 
+                VALUES (?1, ?2, UNIXEPOCH());
+            "#,
+        )
+        .bind(resulting_id)
+        .bind(artifact_use_uuid)
+        .execute(&mut t)
+        .await?;
+
+        t.commit().await?;
+
+        Ok((
+            artifact_use_uuid,
+            artifact_uuid,
+            backend_name,
+            artifact_type,
+        ))
     }
 }

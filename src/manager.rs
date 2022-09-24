@@ -270,4 +270,37 @@ impl ArtifactManager {
             }
         }
     }
+
+    pub async fn get_last_artifact(
+        &mut self,
+        class_name: String,
+        sources: Vec<Source>,
+        tags: Vec<Tag>,
+        proxy: Option<String>,
+    ) -> Result<(Uuid, Uuid, Url)> {
+        let (artifact_usage_uuid, artifact_uuid, backend_name, artifact_type) = self
+            .storage
+            .get_last_artifact(&class_name, &sources, &tags)
+            .await?;
+        let res = async {
+            let backend = self
+                .backends
+                .get_mut(&backend_name)
+                .ok_or(ManagerError::BackendNotExists)?;
+            backend
+                .get_artifact(proxy.as_deref(), &class_name, artifact_type, artifact_uuid)
+                .await
+        }
+        .await;
+        match res {
+            Ok(url) => Ok((artifact_usage_uuid, artifact_uuid, url)),
+            Err(e) => {
+                dbg!(&e);
+                self.storage
+                    .release_artifact_usage(artifact_usage_uuid)
+                    .await?;
+                Err(e)
+            }
+        }
+    }
 }

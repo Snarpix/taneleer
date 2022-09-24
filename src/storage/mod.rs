@@ -101,6 +101,14 @@ pub trait Storage {
     ) -> Result<(Uuid, String, String, ArtifactType)>;
 
     #[must_use]
+    async fn get_last_artifact(
+        &mut self,
+        class_name: &str,
+        sources: &[Source],
+        tags: &[Tag],
+    ) -> Result<(Uuid, Uuid, String, ArtifactType)>;
+
+    #[must_use]
     async fn release_artifact_usage(&mut self, artifact_usage_uuid: Uuid) -> Result<()>;
 }
 

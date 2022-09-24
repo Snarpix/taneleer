@@ -51,6 +51,104 @@ struct Artifact {
     manager: SharedArtifactManager,
 }
 
+fn parse_src(
+    sources: HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
+) -> StdResult<Vec<Source>, MethodErr> {
+    let mut sources_conv = Vec::new();
+    for (source_name, (source_type, source_meta)) in sources {
+        let meta = match source_type.as_str() {
+            "url" => {
+                let mut arg_iter = source_meta
+                    .0
+                    .as_iter()
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                let url = arg_iter
+                    .next()
+                    .and_then(|i| i.as_str())
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                let hash = arg_iter
+                    .next()
+                    .and_then(|i| i.as_str())
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                if arg_iter.next().is_some() {
+                    return Err(MethodErr::invalid_arg(&source_meta));
+                }
+                let mut sha256_hash: Sha256 = Default::default();
+                hex::decode_to_slice(hash, &mut sha256_hash)
+                    .map_err(|_| MethodErr::invalid_arg(&hash))?;
+                SourceType::Url {
+                    url: url.to_owned(),
+                    hash: Hashsum::Sha256(sha256_hash),
+                }
+            }
+            "git" => {
+                let mut arg_iter = source_meta
+                    .0
+                    .as_iter()
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                let repo = arg_iter
+                    .next()
+                    .and_then(|i| i.as_str())
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                let commit = arg_iter
+                    .next()
+                    .and_then(|i| i.as_str())
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                if arg_iter.next().is_some() {
+                    return Err(MethodErr::invalid_arg(&source_meta));
+                }
+                let mut sha1_hash: Sha1 = Default::default();
+                hex::decode_to_slice(commit, &mut sha1_hash)
+                    .map_err(|_| MethodErr::invalid_arg(&commit))?;
+                SourceType::Git {
+                    repo: repo.to_owned(),
+                    commit: sha1_hash,
+                }
+            }
+            "artifact" => {
+                let mut arg_iter = source_meta
+                    .0
+                    .as_iter()
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                let uuid = arg_iter
+                    .next()
+                    .and_then(|i| i.as_str())
+                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+                if arg_iter.next().is_some() {
+                    return Err(MethodErr::invalid_arg(&source_meta));
+                }
+                let uuid = Uuid::parse_str(uuid).map_err(|_| MethodErr::invalid_arg(&uuid))?;
+                SourceType::Artifact { uuid }
+            }
+            _ => {
+                return Err(MethodErr::invalid_arg(&source_type));
+            }
+        };
+        sources_conv.push(Source {
+            name: source_name,
+            source: meta,
+        });
+    }
+    Ok(sources_conv)
+}
+
+fn parse_tags(tags: Vec<(String, String)>) -> Vec<Tag> {
+    tags.into_iter()
+        .map(|(name, value)| {
+            let value = if value.is_empty() { None } else { Some(value) };
+            Tag { name, value }
+        })
+        .collect()
+}
+
+fn parse_proxy(proxy: String) -> Option<String> {
+    if proxy.is_empty() {
+        None
+    } else {
+        Some(proxy)
+    }
+}
+
 impl DBusFrontend {
     pub async fn new(
         dbus_name: &str,
@@ -558,14 +656,14 @@ impl DBusFrontendInner {
             |b: &mut IfaceBuilder<ArtifactClass>| {
                 b.method_with_cr_async(
                     "Reserve",
-                    ("proxy", "sources", "tags"),
+                    ("sources", "tags", "proxy"),
                     ("uuid", "url"),
                     move |mut ctx,
                           cr,
-                          (proxy, sources, tags): (
-                        String,
+                          (sources, tags, proxy): (
                         HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
                         Vec<(String, String)>,
+                        String,
                     )| {
                         let obj = cr
                             .data_mut::<ArtifactClass>(ctx.path())
@@ -574,103 +672,9 @@ impl DBusFrontendInner {
                         async move {
                             let res = async move {
                                 let ArtifactClass { name, manager } = obj?;
-                                let mut sources_conv = Vec::new();
-                                for (source_name, (source_type, source_meta)) in sources {
-                                    let meta = match source_type.as_str() {
-                                        "url" => {
-                                            let mut arg_iter =
-                                                source_meta.0.as_iter().ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            let url = arg_iter
-                                                .next()
-                                                .and_then(|i| i.as_str())
-                                                .ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            let hash = arg_iter
-                                                .next()
-                                                .and_then(|i| i.as_str())
-                                                .ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            if arg_iter.next().is_some() {
-                                                return Err(MethodErr::invalid_arg(&source_meta));
-                                            }
-                                            let mut sha256_hash: Sha256 = Default::default();
-                                            hex::decode_to_slice(hash, &mut sha256_hash)
-                                                .map_err(|_| MethodErr::invalid_arg(&hash))?;
-                                            SourceType::Url {
-                                                url: url.to_owned(),
-                                                hash: Hashsum::Sha256(sha256_hash),
-                                            }
-                                        }
-                                        "git" => {
-                                            let mut arg_iter =
-                                                source_meta.0.as_iter().ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            let repo = arg_iter
-                                                .next()
-                                                .and_then(|i| i.as_str())
-                                                .ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            let commit = arg_iter
-                                                .next()
-                                                .and_then(|i| i.as_str())
-                                                .ok_or_else(|| {
-                                                MethodErr::invalid_arg(&source_meta)
-                                            })?;
-                                            if arg_iter.next().is_some() {
-                                                return Err(MethodErr::invalid_arg(&source_meta));
-                                            }
-                                            let mut sha1_hash: Sha1 = Default::default();
-                                            hex::decode_to_slice(commit, &mut sha1_hash)
-                                                .map_err(|_| MethodErr::invalid_arg(&commit))?;
-                                            SourceType::Git {
-                                                repo: repo.to_owned(),
-                                                commit: sha1_hash,
-                                            }
-                                        }
-                                        "artifact" => {
-                                            let mut arg_iter =
-                                                source_meta.0.as_iter().ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            let uuid = arg_iter
-                                                .next()
-                                                .and_then(|i| i.as_str())
-                                                .ok_or_else(|| {
-                                                    MethodErr::invalid_arg(&source_meta)
-                                                })?;
-                                            if arg_iter.next().is_some() {
-                                                return Err(MethodErr::invalid_arg(&source_meta));
-                                            }
-                                            let uuid = Uuid::parse_str(uuid)
-                                                .map_err(|_| MethodErr::invalid_arg(&uuid))?;
-                                            SourceType::Artifact { uuid }
-                                        }
-                                        _ => {
-                                            return Err(MethodErr::invalid_arg(&source_type));
-                                        }
-                                    };
-                                    sources_conv.push(Source {
-                                        name: source_name,
-                                        source: meta,
-                                    });
-                                }
-                                let tags = tags
-                                    .into_iter()
-                                    .map(|(name, value)| {
-                                        let value =
-                                            if value.is_empty() { None } else { Some(value) };
-                                        Tag { name, value }
-                                    })
-                                    .collect();
-
-                                let proxy = if proxy.is_empty() { None } else { Some(proxy) };
-
+                                let sources_conv = parse_src(sources)?;
+                                let tags = parse_tags(tags);
+                                let proxy = parse_proxy(proxy);
                                 let mut manager = manager.lock().await;
                                 match manager
                                     .reserve_artifact(name, sources_conv, tags, proxy)
@@ -679,6 +683,50 @@ impl DBusFrontendInner {
                                     Ok((uuid, url)) => Ok((uuid.to_string(), url.to_string())),
                                     Err(e) => {
                                         error!("Failed to reserve artifact: {:?}", e);
+                                        Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                            .into())
+                                    }
+                                }
+                            }
+                            .await;
+                            ctx.reply(res)
+                        }
+                    },
+                );
+                b.method_with_cr_async(
+                    "GetLast",
+                    ("sources", "tags", "proxy"),
+                    ("reserve_uuid", "artifact_uuid", "url"),
+                    move |mut ctx,
+                          cr,
+                          (sources, tags, proxy): (
+                        HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
+                        Vec<(String, String)>,
+                        String,
+                    )| {
+                        let obj = cr
+                            .data_mut::<ArtifactClass>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        async move {
+                            let res: StdResult<_, MethodErr> = async move {
+                                let ArtifactClass { name, manager } = obj?;
+                                let sources_conv = parse_src(sources)?;
+                                let tags = parse_tags(tags);
+                                let proxy = parse_proxy(proxy);
+                                let mut manager = manager.lock().await;
+
+                                match manager
+                                    .get_last_artifact(name, sources_conv, tags, proxy)
+                                    .await
+                                {
+                                    Ok((artifact_reserve, artifact_uuid, url)) => Ok((
+                                        artifact_reserve.to_string(),
+                                        artifact_uuid.to_string(),
+                                        url.to_string(),
+                                    )),
+                                    Err(e) => {
+                                        error!("Failed to get last artifact: {:?}", e);
                                         Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
                                             .into())
                                     }
