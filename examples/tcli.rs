@@ -181,6 +181,7 @@ enum ArtifactCommands {
         src: Vec<String>,
         #[clap(long)]
         tag: Vec<String>,
+        #[clap(long)]
         no_use: bool,
     },
 }
@@ -315,7 +316,7 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
             let () = get_artifact_proxy(conn, &artifact_uuid)
                 .method_call(
                     "com.snarpix.taneleer.Artifact",
-                    "Get",
+                    "Use",
                     (proxy.as_deref().unwrap_or(""),),
                 )
                 .unwrap();
@@ -330,19 +331,20 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
             let tags = parse_tags(tag);
             let srcs = parse_srcs(src);
             if *no_use {
-                let () = get_artifact_class_proxy(conn, &class_name)
+                let (artifact_uuid,): (String,) = get_artifact_class_proxy(conn, &class_name)
                     .method_call(
                         "com.snarpix.taneleer.ArtifactClass",
                         "FindLast",
-                        (proxy.as_deref().unwrap_or(""), srcs, tags),
+                        (srcs, tags),
                     )
                     .unwrap();
+                println!("{}", artifact_uuid);
             } else {
                 let (reserve_uuid, artifact_uuid, url): (String, String, String) =
                     get_artifact_class_proxy(conn, &class_name)
                         .method_call(
                             "com.snarpix.taneleer.ArtifactClass",
-                            "GetLast",
+                            "UseLast",
                             (srcs, tags, proxy.as_deref().unwrap_or("")),
                         )
                         .unwrap();

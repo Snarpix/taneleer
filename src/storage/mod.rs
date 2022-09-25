@@ -95,18 +95,18 @@ pub trait Storage {
     async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid, error: &str) -> Result<()>;
 
     #[must_use]
-    async fn get_artifact(
+    async fn use_artifact(
         &mut self,
         artifact_uuid: Uuid,
     ) -> Result<(Uuid, String, String, ArtifactType)>;
 
     #[must_use]
-    async fn get_last_artifact(
+    async fn find_last_artifact(
         &mut self,
         class_name: &str,
         sources: &[Source],
         tags: &[Tag],
-    ) -> Result<(Uuid, Uuid, String, ArtifactType)>;
+    ) -> Result<Uuid>;
 
     #[must_use]
     async fn release_artifact_usage(&mut self, artifact_usage_uuid: Uuid) -> Result<()>;

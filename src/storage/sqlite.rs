@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use futures::{StreamExt, TryStreamExt};
-use log::error;
+use futures::TryStreamExt;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
-use sqlx::Either;
 use uuid::Uuid;
 
 use super::Storage;
@@ -22,7 +20,6 @@ pub enum SqliteError {
     InvalidArtifactType,
     InvalidExternalSourceType,
     InvalidHashType,
-    InvalidEither,
 }
 
 impl std::fmt::Display for SqliteError {
@@ -802,7 +799,7 @@ VALUES (?1, ?2, ?3, "sha256", ?4);
         Ok(())
     }
 
-    async fn get_artifact(
+    async fn use_artifact(
         &mut self,
         artifact_uuid: Uuid,
     ) -> Result<(Uuid, String, String, ArtifactType)> {
@@ -859,18 +856,17 @@ VALUES (?1, ?2, UNIXEPOCH());
         Ok(())
     }
 
-    async fn get_last_artifact(
+    async fn find_last_artifact(
         &mut self,
         class_name: &str,
         sources: &[Source],
         tags: &[Tag],
-    ) -> Result<(Uuid, Uuid, String, ArtifactType)> {
+    ) -> Result<Uuid> {
         let mut t = self.pool.begin().await?;
 
-        let (class_id, backend_name, artifact_type): (i64, String, ArtifactType) = sqlx::query_as(
-            r#"
-                SELECT id, backend, artifact_type FROM artifact_classes
-                    WHERE name = ?1 AND state = ?2;"#,
+        let class_id: i64 = sqlx::query_scalar(
+            r#"SELECT id FROM artifact_classes
+            WHERE name = ?1 AND state = ?2;"#,
         )
         .bind(class_name)
         .bind(ArtifactClassState::Init)
@@ -1030,25 +1026,6 @@ VALUES (?1, ?2, UNIXEPOCH());
                 .fetch_one(&mut t)
                 .await?;
 
-        let artifact_use_uuid = Uuid::new_v4();
-        sqlx::query(
-            r#"
-            INSERT INTO artifact_usage(artifact_id, uuid, reserve_time) 
-                VALUES (?1, ?2, UNIXEPOCH());
-            "#,
-        )
-        .bind(resulting_id)
-        .bind(artifact_use_uuid)
-        .execute(&mut t)
-        .await?;
-
-        t.commit().await?;
-
-        Ok((
-            artifact_use_uuid,
-            artifact_uuid,
-            backend_name,
-            artifact_type,
-        ))
+        Ok(artifact_uuid)
     }
 }

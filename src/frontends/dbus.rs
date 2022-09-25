@@ -694,7 +694,42 @@ impl DBusFrontendInner {
                     },
                 );
                 b.method_with_cr_async(
-                    "GetLast",
+                    "FindLast",
+                    ("sources", "tags"),
+                    ("artifact_uuid",),
+                    move |mut ctx,
+                          cr,
+                          (sources, tags): (
+                        HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
+                        Vec<(String, String)>,
+                    )| {
+                        let obj = cr
+                            .data_mut::<ArtifactClass>(ctx.path())
+                            .cloned()
+                            .ok_or_else(|| MethodErr::no_path(ctx.path()));
+                        async move {
+                            let res: StdResult<_, MethodErr> = async move {
+                                let ArtifactClass { name, manager } = obj?;
+                                let sources_conv = parse_src(sources)?;
+                                let tags = parse_tags(tags);
+                                let mut manager = manager.lock().await;
+
+                                match manager.find_last_artifact(name, sources_conv, tags).await {
+                                    Ok(artifact_uuid) => Ok((artifact_uuid.to_string(),)),
+                                    Err(e) => {
+                                        error!("Failed to get last artifact: {:?}", e);
+                                        Err(("com.snarpix.taneleer.Error.Unknown", "Unknown error")
+                                            .into())
+                                    }
+                                }
+                            }
+                            .await;
+                            ctx.reply(res)
+                        }
+                    },
+                );
+                b.method_with_cr_async(
+                    "UseLast",
                     ("sources", "tags", "proxy"),
                     ("reserve_uuid", "artifact_uuid", "url"),
                     move |mut ctx,
@@ -717,7 +752,7 @@ impl DBusFrontendInner {
                                 let mut manager = manager.lock().await;
 
                                 match manager
-                                    .get_last_artifact(name, sources_conv, tags, proxy)
+                                    .use_last_artifact(name, sources_conv, tags, proxy)
                                     .await
                                 {
                                     Ok((artifact_reserve, artifact_uuid, url)) => Ok((
@@ -819,7 +854,7 @@ impl DBusFrontendInner {
             "com.snarpix.taneleer.Artifact",
             |b: &mut IfaceBuilder<Artifact>| {
                 b.method_with_cr_async(
-                    "Get",
+                    "Use",
                     ("proxy",),
                     ("reserve_uuid", "url"),
                     move |mut ctx, cr, (proxy,): (String,)| {
@@ -838,7 +873,7 @@ impl DBusFrontendInner {
                                 let proxy = if proxy.is_empty() { None } else { Some(proxy) };
 
                                 let mut manager = manager.lock().await;
-                                match manager.get_artifact(uuid, proxy).await {
+                                match manager.use_artifact(uuid, proxy).await {
                                     Ok((reserve_uuid, url)) => {
                                         Ok((reserve_uuid.to_string(), url.to_string()))
                                     }

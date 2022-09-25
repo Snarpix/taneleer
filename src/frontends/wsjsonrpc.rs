@@ -160,7 +160,7 @@ impl WSFrontend {
         handlers.insert("reserve_artifact", reserve_artifact);
         handlers.insert("commit_artifact", commit_artifact);
         handlers.insert("abort_reserve", abort_reserve);
-        handlers.insert("get_artifact", get_artifact);
+        handlers.insert("use_artifact", use_artifact);
 
         let handlers = Arc::new(handlers);
         let addr = SocketAddr::new(cfg.address, cfg.port);
@@ -460,18 +460,18 @@ struct GetArtifact {
 }
 
 #[derive(Serialize)]
-struct GetArtifactRes {
+struct UseArtifactRes {
     uuid: Uuid,
     url: String,
 }
 
-async fn get_artifact(
+async fn use_artifact(
     GetArtifact { uuid, proxy }: GetArtifact,
     manager: SharedArtifactManager,
 ) -> RpcResult {
-    match manager.lock().await.get_artifact(uuid, proxy).await {
+    match manager.lock().await.use_artifact(uuid, proxy).await {
         Ok((uuid, url)) => RpcResult::Result(
-            serde_json::to_value(GetArtifactRes {
+            serde_json::to_value(UseArtifactRes {
                 uuid,
                 url: url.to_string(),
             })

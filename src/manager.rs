@@ -35,6 +35,7 @@ pub struct ArtifactManager {
 
 #[derive(Debug)]
 pub enum ManagerError {
+    InternalError,
     BackendNotExists,
     ProxyNotExists,
 }
@@ -243,13 +244,13 @@ impl ArtifactManager {
         }
     }
 
-    pub async fn get_artifact(
+    pub async fn use_artifact(
         &mut self,
         artifact_uuid: Uuid,
         proxy: Option<String>,
     ) -> Result<(Uuid, Url)> {
         let (artifact_usage_uuid, class_name, backend_name, artifact_type) =
-            self.storage.get_artifact(artifact_uuid).await?;
+            self.storage.use_artifact(artifact_uuid).await?;
         let res = async {
             let backend = self
                 .backends
@@ -271,17 +272,35 @@ impl ArtifactManager {
         }
     }
 
-    pub async fn get_last_artifact(
+    pub async fn find_last_artifact(
+        &mut self,
+        class_name: String,
+        sources: Vec<Source>,
+        tags: Vec<Tag>,
+    ) -> Result<Uuid> {
+        let artifact_uuid = self
+            .storage
+            .find_last_artifact(&class_name, &sources, &tags)
+            .await?;
+        Ok(artifact_uuid)
+    }
+
+    pub async fn use_last_artifact(
         &mut self,
         class_name: String,
         sources: Vec<Source>,
         tags: Vec<Tag>,
         proxy: Option<String>,
     ) -> Result<(Uuid, Uuid, Url)> {
-        let (artifact_usage_uuid, artifact_uuid, backend_name, artifact_type) = self
+        let artifact_uuid = self
             .storage
-            .get_last_artifact(&class_name, &sources, &tags)
+            .find_last_artifact(&class_name, &sources, &tags)
             .await?;
+        let (artifact_usage_uuid, a_class_name, backend_name, artifact_type) =
+            self.storage.use_artifact(artifact_uuid).await?;
+        if class_name != a_class_name {
+            return Err(ManagerError::InternalError.into());
+        }
         let res = async {
             let backend = self
                 .backends
