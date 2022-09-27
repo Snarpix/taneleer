@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, sqlx::Type, Serialize, Deserialize)]
+#[derive(Clone, Debug, sqlx::Type, Serialize, Deserialize)]
 #[sqlx(rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactType {

@@ -18,7 +18,7 @@ pub enum ArtifactState {
     Deleted = 3,
 }
 
-#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
+#[derive(Clone, Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct ArtifactData {
     pub class_name: String,
     pub art_type: ArtifactType,
@@ -44,7 +44,7 @@ pub struct ArtifactItem {
     pub info: ArtifactItemInfo,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ArtifactItemInfo {
     pub id: String,
     pub size: u64,

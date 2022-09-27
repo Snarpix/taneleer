@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use sqlx::{sqlite::SqliteRow, Row};
+use strum::{EnumDiscriminants, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
 pub type Sha1 = [u8; 20];
 pub type Sha256 = [u8; 32];
 
 #[serde_as]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "val", rename_all = "lowercase")]
 pub enum Hashsum {
     Sha256(#[serde_as(as = "serde_with::hex::Hex")] Sha256),
@@ -40,8 +42,10 @@ impl Hashsum {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, EnumDiscriminants, IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
+#[strum_discriminants(derive(EnumString))]
+#[strum(serialize_all = "snake_case")]
 pub enum SourceType {
     Url {
         url: String,

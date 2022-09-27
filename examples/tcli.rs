@@ -169,6 +169,9 @@ enum ArtifactCommands {
         #[clap(long)]
         tag: Vec<String>,
     },
+    Get {
+        artifact_uuid: String,
+    },
     Use {
         artifact_uuid: String,
         #[clap(long)]
@@ -307,6 +310,11 @@ fn do_artifact_cmd(conn: &Connection, cmd: &ArtifactCommands) {
             let tags = parse_tags(tag);
             let () = get_artifact_reserve_proxy(conn, &artifact_uuid)
                 .method_call("com.snarpix.taneleer.ArtifactReserve", "Commit", (tags,))
+                .unwrap();
+        }
+        ArtifactCommands::Get { artifact_uuid } => {
+            let () = get_artifact_proxy(conn, &artifact_uuid)
+                .method_call("com.snarpix.taneleer.Artifact", "Get", ())
                 .unwrap();
         }
         ArtifactCommands::Use {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use dbus::arg::{Dict, RefArg, Variant};
+use dbus::arg::{Append, Arg, Dict, Get, RefArg, Variant};
 use dbus::channel::{BusType, MatchingReceiver};
 use dbus::message::MatchRule;
 use dbus::nonblock::SyncConnection;
@@ -16,13 +16,13 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::Frontend;
-use crate::artifact::{ArtifactItem, ArtifactItemInfo, ArtifactState};
+use crate::artifact::{ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState};
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::manager::{ArtifactManager, ManagerMessage, SharedArtifactManager};
-use crate::source::{Hashsum, Sha1, Sha256, Source, SourceType};
+use crate::source::{Hashsum, Sha1, Sha256, Source, SourceType, SourceTypeDiscriminants};
 use crate::tag::{ArtifactTag, Tag};
-use crate::usage::ArtifactUsage;
+use crate::usage::{ArtifactUsage, Usage};
 
 pub struct DBusFrontend {
     handle: JoinHandle<IOResourceError>,
@@ -51,94 +51,168 @@ struct Artifact {
     manager: SharedArtifactManager,
 }
 
-fn parse_src(
-    sources: HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
-) -> StdResult<Vec<Source>, MethodErr> {
-    let mut sources_conv = Vec::new();
-    for (source_name, (source_type, source_meta)) in sources {
-        let meta = match source_type.as_str() {
-            "url" => {
-                let mut arg_iter = source_meta
-                    .0
-                    .as_iter()
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                let url = arg_iter
-                    .next()
-                    .and_then(|i| i.as_str())
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                let hash = arg_iter
-                    .next()
-                    .and_then(|i| i.as_str())
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+impl Arg for ArtifactData {
+    const ARG_TYPE: dbus::arg::ArgType = dbus::arg::ArgType::Struct;
+
+    fn signature() -> dbus::Signature<'static> {
+        <(String, String, i64, i64, i64, String, String, String) as Arg>::signature()
+    }
+}
+
+impl Append for ArtifactData {
+    fn append_by_ref(&self, i: &mut dbus::arg::IterAppend) {
+        (
+            &self.class_name,
+            self.art_type.to_string(),
+            self.reserve_time,
+            self.commit_time.unwrap_or(0),
+            self.use_count,
+            <&str>::from(self.state).to_owned(),
+            self.next_state.map(<&str>::from).unwrap_or("").to_owned(),
+            self.error.as_deref().unwrap_or(""),
+        )
+            .append_by_ref(i)
+    }
+}
+
+impl<'a> Get<'a> for ArtifactData {
+    fn get(i: &mut dbus::arg::Iter<'a>) -> Option<Self> {
+        let (class_name, art_type, reserve_time, commit_time, use_count, state, next_state, e): (
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+            String,
+        ) = i.get()?;
+        Some(ArtifactData {
+            class_name,
+            art_type: art_type.parse().ok()?,
+            reserve_time,
+            commit_time: if commit_time == 0 {
+                None
+            } else {
+                Some(commit_time)
+            },
+            use_count,
+            state: state.parse().ok()?,
+            next_state: if next_state.is_empty() {
+                None
+            } else {
+                Some(next_state.parse().ok()?)
+            },
+            error: if e.is_empty() { None } else { Some(e) },
+        })
+    }
+}
+
+impl Arg for SourceType {
+    const ARG_TYPE: dbus::arg::ArgType = dbus::arg::ArgType::Struct;
+
+    fn signature() -> dbus::Signature<'static> {
+        <(String, Variant<Box<dyn RefArg>>) as Arg>::signature()
+    }
+}
+
+impl Append for SourceType {
+    fn append_by_ref(&self, i: &mut dbus::arg::IterAppend) {
+        let res: (&str, Variant<Box<dyn RefArg>>) = match self {
+            SourceType::Artifact { uuid } => {
+                (<&str>::from(self), Variant(Box::new(uuid.to_string())))
+            }
+            SourceType::Git { repo, commit } => (
+                <&str>::from(self),
+                Variant(Box::new((repo.clone(), hex::encode(&commit)))),
+            ),
+            SourceType::Url { url, hash } => {
+                let Hashsum::Sha256(s) = hash;
+                (
+                    <&str>::from(self),
+                    Variant(Box::new((url.clone(), hex::encode(&s)))),
+                )
+            }
+        };
+        res.append_by_ref(i)
+    }
+}
+
+impl<'a> Get<'a> for SourceType {
+    fn get(i: &mut dbus::arg::Iter<'a>) -> Option<Self> {
+        let (source_type, source_meta): (String, Variant<Box<dyn RefArg>>) = i.get()?;
+        let source_type: SourceTypeDiscriminants = source_type.parse().ok()?;
+        Some(match source_type {
+            SourceTypeDiscriminants::Url => {
+                let mut arg_iter = source_meta.0.as_iter()?;
+                let url = arg_iter.next().and_then(|i| i.as_str())?;
+                let hash = arg_iter.next().and_then(|i| i.as_str())?;
                 if arg_iter.next().is_some() {
-                    return Err(MethodErr::invalid_arg(&source_meta));
+                    return None;
                 }
                 let mut sha256_hash: Sha256 = Default::default();
-                hex::decode_to_slice(hash, &mut sha256_hash)
-                    .map_err(|_| MethodErr::invalid_arg(&hash))?;
+                hex::decode_to_slice(hash, &mut sha256_hash).ok()?;
                 SourceType::Url {
                     url: url.to_owned(),
                     hash: Hashsum::Sha256(sha256_hash),
                 }
             }
-            "git" => {
-                let mut arg_iter = source_meta
-                    .0
-                    .as_iter()
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                let repo = arg_iter
-                    .next()
-                    .and_then(|i| i.as_str())
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                let commit = arg_iter
-                    .next()
-                    .and_then(|i| i.as_str())
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+            SourceTypeDiscriminants::Git => {
+                let mut arg_iter = source_meta.0.as_iter()?;
+                let repo = arg_iter.next().and_then(|i| i.as_str())?;
+                let commit = arg_iter.next().and_then(|i| i.as_str())?;
                 if arg_iter.next().is_some() {
-                    return Err(MethodErr::invalid_arg(&source_meta));
+                    return None;
                 }
                 let mut sha1_hash: Sha1 = Default::default();
-                hex::decode_to_slice(commit, &mut sha1_hash)
-                    .map_err(|_| MethodErr::invalid_arg(&commit))?;
+                hex::decode_to_slice(commit, &mut sha1_hash).ok()?;
                 SourceType::Git {
                     repo: repo.to_owned(),
                     commit: sha1_hash,
                 }
             }
-            "artifact" => {
-                let mut arg_iter = source_meta
-                    .0
-                    .as_iter()
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
-                let uuid = arg_iter
-                    .next()
-                    .and_then(|i| i.as_str())
-                    .ok_or_else(|| MethodErr::invalid_arg(&source_meta))?;
+            SourceTypeDiscriminants::Artifact => {
+                let mut arg_iter = source_meta.0.as_iter()?;
+                let uuid = arg_iter.next().and_then(|i| i.as_str())?;
                 if arg_iter.next().is_some() {
-                    return Err(MethodErr::invalid_arg(&source_meta));
+                    return None;
                 }
-                let uuid = Uuid::parse_str(uuid).map_err(|_| MethodErr::invalid_arg(&uuid))?;
+                let uuid = Uuid::parse_str(uuid).ok()?;
                 SourceType::Artifact { uuid }
             }
-            _ => {
-                return Err(MethodErr::invalid_arg(&source_type));
-            }
-        };
-        sources_conv.push(Source {
-            name: source_name,
-            source: meta,
-        });
+        })
     }
-    Ok(sources_conv)
 }
 
-fn parse_tags(tags: Vec<(String, String)>) -> Vec<Tag> {
-    tags.into_iter()
-        .map(|(name, value)| {
-            let value = if value.is_empty() { None } else { Some(value) };
-            Tag { name, value }
-        })
+fn parse_src(sources: HashMap<String, SourceType>) -> Vec<Source> {
+    sources
+        .into_iter()
+        .map(|(name, source)| Source { name, source })
         .collect()
+}
+
+impl Arg for Tag {
+    const ARG_TYPE: dbus::arg::ArgType = dbus::arg::ArgType::Struct;
+
+    fn signature() -> dbus::Signature<'static> {
+        <(String, String) as Arg>::signature()
+    }
+}
+
+impl Append for Tag {
+    fn append_by_ref(&self, i: &mut dbus::arg::IterAppend) {
+        (&self.name, self.value.as_deref().unwrap_or("")).append_by_ref(i);
+    }
+}
+
+impl<'a> Get<'a> for Tag {
+    fn get(i: &mut dbus::arg::Iter<'a>) -> Option<Self> {
+        let (name, value): (String, String) = i.get()?;
+        Some(Tag {
+            name,
+            value: if value.is_empty() { None } else { Some(value) },
+        })
+    }
 }
 
 fn parse_proxy(proxy: String) -> Option<String> {
@@ -325,27 +399,7 @@ impl DBusFrontend {
                             ctx.reply(res.map(|r| {
                                 (Dict::new(
                                     r.into_iter()
-                                        .map(|info| {
-                                            (
-                                                info.uuid.to_string(),
-                                                (
-                                                    info.data.class_name,
-                                                    info.data.art_type.to_string(),
-                                                    info.data.reserve_time,
-                                                    info.data.commit_time.unwrap_or(0),
-                                                    info.data.use_count,
-                                                    <&str>::from(info.data.state).to_owned(),
-                                                    info.data
-                                                        .next_state
-                                                        .map(<&str>::from)
-                                                        .unwrap_or("")
-                                                        .to_owned(),
-                                                    info.data
-                                                        .error
-                                                        .unwrap_or_else(|| "".to_string()),
-                                                ),
-                                            )
-                                        })
+                                        .map(|info| (info.uuid.to_string(), info.data))
                                         .collect::<Vec<_>>(),
                                 ),)
                             }))
@@ -374,33 +428,11 @@ impl DBusFrontend {
                                     .map(
                                         |(uuid, Source { name, source })| -> (
                                             (String, String),
-                                            (&str, Variant<Box<dyn RefArg>>),
+                                            SourceType,
                                         ) {
                                             (
                                                 (uuid.to_string(), name),
-                                                match source {
-                                                    SourceType::Artifact { uuid } => (
-                                                        "artifact",
-                                                        Variant(Box::new(uuid.to_string())),
-                                                    ),
-                                                    SourceType::Git { repo, commit } => (
-                                                        "git",
-                                                        Variant(Box::new((
-                                                            repo,
-                                                            hex::encode(&commit),
-                                                        ))),
-                                                    ),
-                                                    SourceType::Url { url, hash } => {
-                                                        let Hashsum::Sha256(s) = hash;
-                                                        (
-                                                            "url",
-                                                            Variant(Box::new((
-                                                                url,
-                                                                hex::encode(&s),
-                                                            ))),
-                                                        )
-                                                    }
-                                                },
+                                                source,
                                             )
                                         },
                                     )
@@ -493,9 +525,8 @@ impl DBusFrontend {
                             (r.into_iter()
                                 .map(
                                     |ArtifactUsage {
-                                         uuid,
                                          artifact_uuid,
-                                         reserve_time,
+                                         usage: Usage { uuid, reserve_time },
                                      }| {
                                         (
                                             uuid.to_string(),
@@ -661,8 +692,8 @@ impl DBusFrontendInner {
                     move |mut ctx,
                           cr,
                           (sources, tags, proxy): (
-                        HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
-                        Vec<(String, String)>,
+                        HashMap<String, SourceType>,
+                        Vec<Tag>,
                         String,
                     )| {
                         let obj = cr
@@ -672,8 +703,7 @@ impl DBusFrontendInner {
                         async move {
                             let res = async move {
                                 let ArtifactClass { name, manager } = obj?;
-                                let sources_conv = parse_src(sources)?;
-                                let tags = parse_tags(tags);
+                                let sources_conv = parse_src(sources);
                                 let proxy = parse_proxy(proxy);
                                 let mut manager = manager.lock().await;
                                 match manager
@@ -697,12 +727,7 @@ impl DBusFrontendInner {
                     "FindLast",
                     ("sources", "tags"),
                     ("artifact_uuid",),
-                    move |mut ctx,
-                          cr,
-                          (sources, tags): (
-                        HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
-                        Vec<(String, String)>,
-                    )| {
+                    move |mut ctx, cr, (sources, tags): (HashMap<String, SourceType>, Vec<Tag>)| {
                         let obj = cr
                             .data_mut::<ArtifactClass>(ctx.path())
                             .cloned()
@@ -710,8 +735,7 @@ impl DBusFrontendInner {
                         async move {
                             let res: StdResult<_, MethodErr> = async move {
                                 let ArtifactClass { name, manager } = obj?;
-                                let sources_conv = parse_src(sources)?;
-                                let tags = parse_tags(tags);
+                                let sources_conv = parse_src(sources);
                                 let mut manager = manager.lock().await;
 
                                 match manager.find_last_artifact(name, sources_conv, tags).await {
@@ -735,8 +759,8 @@ impl DBusFrontendInner {
                     move |mut ctx,
                           cr,
                           (sources, tags, proxy): (
-                        HashMap<String, (String, Variant<Box<dyn RefArg>>)>,
-                        Vec<(String, String)>,
+                        HashMap<String, SourceType>,
+                        Vec<Tag>,
                         String,
                     )| {
                         let obj = cr
@@ -746,8 +770,7 @@ impl DBusFrontendInner {
                         async move {
                             let res: StdResult<_, MethodErr> = async move {
                                 let ArtifactClass { name, manager } = obj?;
-                                let sources_conv = parse_src(sources)?;
-                                let tags = parse_tags(tags);
+                                let sources_conv = parse_src(sources);
                                 let proxy = parse_proxy(proxy);
                                 let mut manager = manager.lock().await;
 

@@ -7,14 +7,14 @@ use tokio_stream::wrappers::BroadcastStream;
 use url::Url;
 use uuid::Uuid;
 
-use crate::artifact::{Artifact, ArtifactItem, ArtifactState};
+use crate::artifact::{Artifact, ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState};
 use crate::backend_pack::Backends;
 use crate::class::{ArtifactClassData, ArtifactClassState};
 use crate::error::Result;
 use crate::source::Source;
 use crate::storage::Storage;
 use crate::tag::{ArtifactTag, Tag};
-use crate::usage::ArtifactUsage;
+use crate::usage::{ArtifactUsage, Usage};
 
 pub type SharedArtifactManager = Arc<Mutex<ArtifactManager>>;
 pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
@@ -108,20 +108,40 @@ impl ArtifactManager {
         self.storage.get_artifacts_info().await
     }
 
+    pub async fn get_artifact_info(&self, artifact_uuid: Uuid) -> Result<ArtifactData> {
+        self.storage.get_artifact_info(artifact_uuid).await
+    }
+
     pub async fn get_sources(&self) -> Result<Vec<(Uuid, Source)>> {
         self.storage.get_sources().await
+    }
+
+    pub async fn get_artifact_sources(&self, artifact_uuid: Uuid) -> Result<Vec<Source>> {
+        self.storage.get_artifact_sources(artifact_uuid).await
     }
 
     pub async fn get_items(&self) -> Result<Vec<ArtifactItem>> {
         self.storage.get_items().await
     }
 
+    pub async fn get_artifact_items(&self, artifact_uuid: Uuid) -> Result<Vec<ArtifactItemInfo>> {
+        self.storage.get_artifact_items(artifact_uuid).await
+    }
+
     pub async fn get_tags(&self) -> Result<Vec<ArtifactTag>> {
         self.storage.get_tags().await
     }
 
+    pub async fn get_artifact_tags(&self, artifact_uuid: Uuid) -> Result<Vec<Tag>> {
+        self.storage.get_artifact_tags(artifact_uuid).await
+    }
+
     pub async fn get_usages(&self) -> Result<Vec<ArtifactUsage>> {
         self.storage.get_usages().await
+    }
+
+    pub async fn get_artifact_usages(&self, artifact_uuid: Uuid) -> Result<Vec<Usage>> {
+        self.storage.get_artifact_usages(artifact_uuid).await
     }
 
     pub async fn reserve_artifact(

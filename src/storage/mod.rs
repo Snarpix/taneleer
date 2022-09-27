@@ -4,13 +4,13 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::{
-    artifact::{Artifact, ArtifactItem, ArtifactItemInfo, ArtifactState},
+    artifact::{Artifact, ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState},
     class::{ArtifactClassData, ArtifactClassState, ArtifactType},
     config::storage::{ConfigSqliteStorage, ConfigStorage},
     error::Result,
     source::Source,
     tag::{ArtifactTag, Tag},
-    usage::ArtifactUsage,
+    usage::{ArtifactUsage, Usage},
 };
 
 #[async_trait]
@@ -39,16 +39,31 @@ pub trait Storage {
     async fn get_artifacts_info(&self) -> Result<Vec<Artifact>>;
 
     #[must_use]
+    async fn get_artifact_info(&self, artifact_uuid: Uuid) -> Result<ArtifactData>;
+
+    #[must_use]
     async fn get_sources(&self) -> Result<Vec<(Uuid, Source)>>;
+
+    #[must_use]
+    async fn get_artifact_sources(&self, artifact_uuid: Uuid) -> Result<Vec<Source>>;
 
     #[must_use]
     async fn get_items(&self) -> Result<Vec<ArtifactItem>>;
 
     #[must_use]
+    async fn get_artifact_items(&self, artifact_uuid: Uuid) -> Result<Vec<ArtifactItemInfo>>;
+
+    #[must_use]
     async fn get_tags(&self) -> Result<Vec<ArtifactTag>>;
 
     #[must_use]
+    async fn get_artifact_tags(&self, artifact_uuid: Uuid) -> Result<Vec<Tag>>;
+
+    #[must_use]
     async fn get_usages(&self) -> Result<Vec<ArtifactUsage>>;
+
+    #[must_use]
+    async fn get_artifact_usages(&self, artifact_uuid: Uuid) -> Result<Vec<Usage>>;
 
     #[must_use]
     async fn begin_reserve_artifact(
