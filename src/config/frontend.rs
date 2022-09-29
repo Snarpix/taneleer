@@ -3,7 +3,6 @@ use serde_derive::Deserialize;
 #[derive(Deserialize)]
 pub struct ConfigWSJsonRPC {
     pub address: std::net::IpAddr,
-    pub hostname: String,
     pub port: u16,
 }
 

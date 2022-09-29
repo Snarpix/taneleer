@@ -6,7 +6,7 @@ mod methods;
 use std::{net::SocketAddr, sync::Arc};
 
 use futures::{SinkExt, StreamExt};
-use log::{info, warn};
+use log::{trace, warn};
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinHandle,
@@ -67,7 +67,7 @@ impl WSFrontend {
         raw_stream: TcpStream,
         addr: SocketAddr,
     ) {
-        info!("Incoming TCP connection from: {}", addr);
+        trace!("Incoming TCP connection from: {}", addr);
 
         let ws_stream = match tokio_tungstenite::accept_async(raw_stream).await {
             Ok(r) => r,
@@ -76,7 +76,7 @@ impl WSFrontend {
                 return;
             }
         };
-        info!("WebSocket connection established: {}", addr);
+        trace!("WebSocket connection established: {}", addr);
 
         let (mut outgoing, mut incoming) = ws_stream.split();
 
@@ -98,7 +98,7 @@ impl WSFrontend {
             }
         }
 
-        info!("{} disconnected", &addr);
+        trace!("{} disconnected", &addr);
     }
 
     async fn handle_message(

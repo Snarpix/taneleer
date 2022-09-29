@@ -1,7 +1,6 @@
 frontends:
   - type: wsjsonrpc
     address: "::"
-    hostname: host.docker.internal
     port: 5002
 
 backends:
