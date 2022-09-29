@@ -8,9 +8,6 @@ repository = "https://github.com/Snarpix/taneleer"
 description = "Build artifacts storage service"
 
 [dependencies]
-dbus = "0.9.6"
-dbus-crossroads = "0.5.1"
-dbus-tokio = "0.7.5"
 futures = "0.3.24"
 async-trait = "0.1.57"
 tokio = { version = "1.21.0", features = ["full"] }
@@ -37,6 +34,9 @@ libc = "0.2.132"
 clap = { version = "3.2.20", features = ["derive"] }
 strum = { version = "0.24", features = ["derive"] }
 tower = "0.4.13"
+rand = "0.8.5"
 
 [dev-dependencies]
 comfy-table = "6.1.0"
+enum_dispatch = "0.3.8"
+tungstenite = "0.17.3"

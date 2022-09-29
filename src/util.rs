@@ -10,6 +10,7 @@ pub async fn hash_file_sha256(file_path: &Path) -> Result<Sha256, tokio::io::Err
         .read(true)
         .open(file_path)
         .await?;
+    #[allow(clippy::identity_op)]
     let mut buffer = bytes::BytesMut::with_capacity(1 * 1024 * 1024);
     let mut hasher = sha2::Sha256::new();
     while file.read_buf(&mut buffer).await? != 0 {

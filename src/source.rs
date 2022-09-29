@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use sqlx::{sqlite::SqliteRow, Row};
 use strum::{EnumDiscriminants, EnumString, IntoStaticStr};
 use uuid::Uuid;
 

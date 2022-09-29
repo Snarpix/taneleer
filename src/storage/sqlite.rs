@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::Storage;
 use crate::artifact::{Artifact, ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState};
-use crate::class::{ArtifactClassData, ArtifactClassState, ArtifactType};
+use crate::class::{ArtifactClass, ArtifactClassData, ArtifactClassState, ArtifactType};
 use crate::error::Result;
 use crate::source::{Hashsum, Source, SourceType, SourceTypeDiscriminants};
 use crate::tag::{ArtifactTag, Tag};
@@ -334,7 +334,7 @@ fn parse_ext_source_type(
     match typ {
         SourceTypeDiscriminants::Url => Ok(SourceType::Url {
             url,
-            hash: Hashsum::from_split(&hash_type, &hash)?,
+            hash: Hashsum::from_split(hash_type, hash)?,
         }),
         SourceTypeDiscriminants::Git => {
             if hash_type != "sha1" {
@@ -400,32 +400,11 @@ impl Storage for SqliteStorage {
             .map_err(|e| e.into())
     }
 
-    async fn get_classes_info(
-        &self,
-    ) -> Result<Vec<(String, ArtifactClassData, ArtifactClassState)>> {
+    async fn get_classes_info(&self) -> Result<Vec<ArtifactClass>> {
         Ok(
-            sqlx::query_as(r#"SELECT name, backend, artifact_type, state FROM artifact_classes;"#)
+            sqlx::query_as(r#"SELECT name, backend AS backend_name, artifact_type AS art_type, state FROM artifact_classes;"#)
                 .fetch_all(&self.pool)
                 .await?
-                .into_iter()
-                .map(
-                    |(name, backend_name, art_type, state): (
-                        String,
-                        String,
-                        ArtifactType,
-                        ArtifactClassState,
-                    )| {
-                        (
-                            name,
-                            ArtifactClassData {
-                                backend_name,
-                                art_type,
-                            },
-                            state,
-                        )
-                    },
-                )
-                .collect(),
         )
     }
 
@@ -1063,7 +1042,7 @@ VALUES (?1, ?2, UNIXEPOCH());
 
         for Tag { name, value } in tags {
             let first = res.is_none();
-            let item = res.get_or_insert_with(|| HashMap::new());
+            let item = res.get_or_insert_with(HashMap::new);
             let mut stream = sqlx::query_as::<_, (i64, i64)>(
                 r#"
                 SELECT A.id, A.commit_time FROM artifacts AS A 
@@ -1098,7 +1077,7 @@ VALUES (?1, ?2, UNIXEPOCH());
 
         for Source { name, source } in sources {
             let first = res.is_none();
-            let item = res.get_or_insert_with(|| HashMap::new());
+            let item = res.get_or_insert_with(HashMap::new);
             let mut stream = match source {
                 SourceType::Artifact { uuid } => sqlx::query_as::<_, (i64, i64)>(
                     r#"
@@ -1191,11 +1170,12 @@ VALUES (?1, ?2, UNIXEPOCH());
                 let mut max = i64::MIN;
                 let mut max_id = None;
                 for (artifact_id, (tag_count, src_count, commited_time)) in res {
-                    if tag_count == tags.len() as u64 && src_count == sources.len() as u64 {
-                        if commited_time >= max {
-                            max = commited_time;
-                            max_id = Some(artifact_id);
-                        }
+                    if tag_count == tags.len() as u64
+                        && src_count == sources.len() as u64
+                        && commited_time >= max
+                    {
+                        max = commited_time;
+                        max_id = Some(artifact_id);
                     }
                 }
                 if let Some(id) = max_id {

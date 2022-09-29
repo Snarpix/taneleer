@@ -1,7 +1,4 @@
 frontends:
-  - type: dbus
-    dbus_name: com.snarpix.taneleer
-    bus: session
   - type: wsjsonrpc
     address: "::"
     hostname: host.docker.internal

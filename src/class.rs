@@ -59,8 +59,16 @@ impl std::fmt::Display for ArtifactType {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ArtifactClassData {
     pub backend_name: String,
     pub art_type: ArtifactType,
+}
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ArtifactClass {
+    pub name: String,
+    #[sqlx(flatten)]
+    pub data: ArtifactClassData,
+    pub state: ArtifactClassState,
 }

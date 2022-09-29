@@ -1,3 +1,5 @@
+#![allow(clippy::declare_interior_mutable_const)]
+
 mod storage;
 
 use std::collections::HashMap;

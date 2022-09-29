@@ -1,3 +1,4 @@
+mod api;
 mod artifact;
 mod backend_pack;
 mod backends;

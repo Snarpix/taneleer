@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::artifact::{Artifact, ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState};
 use crate::backend_pack::Backends;
-use crate::class::{ArtifactClassData, ArtifactClassState};
+use crate::class::{ArtifactClass, ArtifactClassData};
 use crate::error::Result;
 use crate::source::Source;
 use crate::storage::Storage;
@@ -17,6 +17,7 @@ use crate::tag::{ArtifactTag, Tag};
 use crate::usage::{ArtifactUsage, Usage};
 
 pub type SharedArtifactManager = Arc<Mutex<ArtifactManager>>;
+#[allow(dead_code)]
 pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
 
 #[derive(Clone, Debug)]
@@ -58,6 +59,7 @@ impl ArtifactManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> ManagerMessageStream {
         BroadcastStream::new(self.message_broadcast.subscribe())
     }
@@ -82,6 +84,7 @@ impl ArtifactManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_init_stream(&self) -> Result<Vec<ManagerMessage>> {
         let classes = self
             .storage
@@ -98,9 +101,7 @@ impl ArtifactManager {
         Ok(classes.chain(artifacts).collect())
     }
 
-    pub async fn get_artifact_classes(
-        &self,
-    ) -> Result<Vec<(String, ArtifactClassData, ArtifactClassState)>> {
+    pub async fn get_artifact_classes(&self) -> Result<Vec<ArtifactClass>> {
         self.storage.get_classes_info().await
     }
 

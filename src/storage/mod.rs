@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     artifact::{Artifact, ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState},
-    class::{ArtifactClassData, ArtifactClassState, ArtifactType},
+    class::{ArtifactClass, ArtifactClassData, ArtifactType},
     config::storage::{ConfigSqliteStorage, ConfigStorage},
     error::Result,
     source::Source,
@@ -28,9 +28,7 @@ pub trait Storage {
     async fn get_classes(&self) -> Result<Vec<String>>;
 
     #[must_use]
-    async fn get_classes_info(
-        &self,
-    ) -> Result<Vec<(String, ArtifactClassData, ArtifactClassState)>>;
+    async fn get_classes_info(&self) -> Result<Vec<ArtifactClass>>;
 
     #[must_use]
     async fn get_artifacts(&self) -> Result<Vec<(String, Uuid, ArtifactState)>>;
