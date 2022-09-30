@@ -443,32 +443,29 @@ impl Storage for SqliteStorage {
 
     async fn get_sources(&self) -> Result<Vec<(Uuid, Source)>> {
         let mut res = Vec::new();
+        let mut stream_ext = sqlx::query_as::<_, (Uuid, String, String, String, String, Vec<u8>)>(
+            r#"
+            SELECT A.uuid, name, type, url, hash_type, hash
+                FROM external_sources AS ES
+                JOIN artifacts AS A ON ES.artifact_id = A.id;"#,
+        )
+        .fetch(&self.pool);
         while let Some((artifact_uuid, name, typ, url, hash_type, hash)) =
-            sqlx::query_as::<_, (Uuid, String, String, String, String, Vec<u8>)>(
-                r#"
-                SELECT A.uuid, name, type, url, hash_type, hash
-                    FROM external_sources AS ES JOIN artifacts AS A ON ES.artifact_id = A.id;"#,
-            )
-            .fetch(&self.pool)
-            .try_next()
-            .await?
+            stream_ext.try_next().await?
         {
             let source = parse_ext_source_type(&typ, url, &hash_type, &hash)?;
             res.push((artifact_uuid, Source { name, source }));
         }
 
-        while let Some((artifact_uuid, name, target_uuid)) =
-            sqlx::query_as::<_, (Uuid, String, Uuid)>(
-                r#"
+        let mut stream_int = sqlx::query_as::<_, (Uuid, String, Uuid)>(
+            r#"
             SELECT A.uuid, name, TA.uuid
                 FROM internal_sources AS ISRC
                 JOIN artifacts AS A ON ISRC.artifact_id = A.id
                 JOIN artifacts AS TA ON ISRC.source_artifact_id = TA.id;"#,
-            )
-            .fetch(&self.pool)
-            .try_next()
-            .await?
-        {
+        )
+        .fetch(&self.pool);
+        while let Some((artifact_uuid, name, target_uuid)) = stream_int.try_next().await? {
             res.push((
                 artifact_uuid,
                 Source {
@@ -483,23 +480,21 @@ impl Storage for SqliteStorage {
 
     async fn get_artifact_sources(&self, artifact_uuid: Uuid) -> Result<Vec<Source>> {
         let mut res = Vec::new();
-        while let Some((name, typ, url, hash_type, hash)) =
-            sqlx::query_as::<_, (String, String, String, String, Vec<u8>)>(
-                r#"
-                SELECT name, type, url, hash_type, hash
-                    FROM external_sources AS ES JOIN artifacts AS A ON ES.artifact_id = A.id
-                    WHERE A.uuid = ?1;"#,
-            )
-            .bind(artifact_uuid)
-            .fetch(&self.pool)
-            .try_next()
-            .await?
-        {
+        let mut stream_ext = sqlx::query_as::<_, (String, String, String, String, Vec<u8>)>(
+            r#"
+            SELECT name, type, url, hash_type, hash
+                FROM external_sources AS ES
+                JOIN artifacts AS A ON ES.artifact_id = A.id
+                WHERE A.uuid = ?1;"#,
+        )
+        .bind(artifact_uuid)
+        .fetch(&self.pool);
+        while let Some((name, typ, url, hash_type, hash)) = stream_ext.try_next().await? {
             let source = parse_ext_source_type(&typ, url, &hash_type, &hash)?;
             res.push(Source { name, source });
         }
 
-        while let Some((name, target_uuid)) = sqlx::query_as::<_, (String, Uuid)>(
+        let mut stream_int = sqlx::query_as::<_, (String, Uuid)>(
             r#"
             SELECT name, TA.uuid
                 FROM internal_sources AS ISRC
@@ -508,10 +503,8 @@ impl Storage for SqliteStorage {
                 WHERE A.uuid = ?1;"#,
         )
         .bind(artifact_uuid)
-        .fetch(&self.pool)
-        .try_next()
-        .await?
-        {
+        .fetch(&self.pool);
+        while let Some((name, target_uuid)) = stream_int.try_next().await? {
             res.push(Source {
                 name,
                 source: SourceType::Artifact { uuid: target_uuid },
@@ -1076,6 +1069,7 @@ VALUES (?1, ?2, UNIXEPOCH());
         }
 
         for Source { name, source } in sources {
+            dbg!(&name);
             let first = res.is_none();
             let item = res.get_or_insert_with(HashMap::new);
             let mut stream = match source {
