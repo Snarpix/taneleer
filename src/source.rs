@@ -44,6 +44,7 @@ impl Hashsum {
 #[derive(Serialize, Deserialize, EnumDiscriminants, IntoStaticStr)]
 #[serde(rename_all = "snake_case")]
 #[strum_discriminants(derive(EnumString))]
+#[strum_discriminants(strum(serialize_all = "snake_case"))]
 #[strum(serialize_all = "snake_case")]
 pub enum SourceType {
     Url {
