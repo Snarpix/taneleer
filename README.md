@@ -12,6 +12,92 @@ It's currently in heavy development, no stability guaranties.
 * Attach metadata about build time, and list all the sources
 * "Give me latest build of this artifact from this commit"
 
+## Usage
+
+1. Create build job(for example multibranch pipeline jenkins):
+```
+node { 
+    def results
+    stage('Checkout') { 
+        results = checkout scm
+    }
+
+    def artifact_uuid
+    def artifact_url
+    stage('Reserve') { 
+        sh "printenv | sort"
+        def res = sh(returnStdout: true, script: "tcli artifact reserve rust_builder --src main,git,${results.GIT_URL},${results.GIT_COMMIT} --tag builder:jenkins --tag branch:${env.BRANCH_NAME} --tag build_id:${env.BUILD_ID}").trim().split('\n')
+        artifact_uuid = res[0]
+        artifact_url = res[1]
+    }
+
+    stage('Build') { 
+        sh "docker build -t ${artifact_url} rust_builder"
+    }
+
+    stage('Push') { 
+        sh "docker push ${artifact_url}"
+    }
+
+    stage('Commit') { 
+        sh "tcli artifact commit ${artifact_uuid}"
+    }
+}
+
+```
+2. In other job get last artifact or request a build
+```
+node { 
+    def results
+    stage('Checkout') { 
+        results = checkout scm
+    }
+
+    def artifact_uuid
+    def artifact_url
+    def commit = 'fbedbd91c89194519b857ea12d691753bab515f9'
+    def repo = '/Users/snarpix/Documents/rust_builder'
+    stage('Get') { 
+        sh "printenv | sort"
+        try {
+            def res = sh(returnStdout: true, script: "tcli artifact last rust_builder --src main,git,$repo,$commit").trim().split('\n')
+            reserve_uuid = res[0]
+            artifact_uuid = res[1]
+            artifact_url = res[2]
+        } catch (e) {
+            // Use bitbucket or gihub api to add a tag
+            // If no API - use clone filter
+            // Or just clone whole repo to add a tag
+            sh "git clone $repo"
+            dir('rust_builder') {
+                sh "git co $commit"
+                sh "git tag -a tag_123 -m 'tag_123'"
+                sh "git push origin tag_123"
+            }
+            build(job: "rust_builder", wait: false)
+            // No way to wait for multibranch pipeline scan to finish
+            // Poll
+            for (int i=0; i < 13; i++) {
+                try {
+                    build(job: "rust_builder/tag_123")
+                    break;
+                } catch(hudson.AbortException nested_e) {
+                    if (nested_e.getMessage() != "No item named rust_builder/tag_123 found") {
+                        throw nested_e;
+                    }
+                    sleep(10);
+                }
+            }
+            // Now build is finished and we can use new artifact
+            def res = sh(returnStdout: true, script: "tcli artifact last rust_builder --src main,git,$repo,$commit").trim().split('\n')
+            reserve_uuid = res[0]
+            artifact_uuid = res[1]
+            artifact_url = res[2]
+        }
+        sh "echo $reserve_uuid $artifact_uuid $artifact_url"
+    }
+}
+```
 
 ## Contributing
 
