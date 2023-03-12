@@ -58,7 +58,7 @@ struct DockerRegistryBackendState {
 impl DockerRegistryBackendState {
     fn repo_path(&self, repo_name: &str) -> PathBuf {
         let mut file_path = root_repo_path(&self.root_path);
-        file_path.push(&repo_name);
+        file_path.push(repo_name);
         file_path
     }
 
@@ -818,7 +818,7 @@ impl DockerRegistryBackend {
             }
             Reference::Digest(digest) => {
                 let file_path = state.manifest_by_digest_path(&repo_name, &digest);
-                let digest = "sha256:".to_owned() + &hex::encode(&digest);
+                let digest = "sha256:".to_owned() + &hex::encode(digest);
                 (file_path, digest)
             }
         };

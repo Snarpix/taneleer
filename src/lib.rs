@@ -8,13 +8,13 @@ mod backends;
 mod class;
 mod config;
 mod error;
-mod frontends;
 mod manager;
 mod proxies;
+mod rpc;
 mod source;
 mod storage;
 mod tag;
 mod usage;
 mod util;
 
-pub use frontends::wsjsonrpc::jsonrpc;
+pub use rpc::wsjsonrpc::jsonrpc;

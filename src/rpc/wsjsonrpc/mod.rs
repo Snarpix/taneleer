@@ -13,7 +13,7 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::{config::frontend::ConfigWSJsonRPC, error::Error, manager::SharedArtifactManager};
+use crate::{config::rpc::ConfigWSJsonRPC, error::Error, manager::SharedArtifactManager};
 
 use self::{
     handlers::Handlers,
@@ -21,13 +21,13 @@ use self::{
     methods::*,
 };
 
-use super::Frontend;
+use super::Rpc;
 
-pub struct WSFrontend {
+pub struct WsRpc {
     _handle: JoinHandle<()>,
 }
 
-impl WSFrontend {
+impl WsRpc {
     pub async fn new(cfg: &ConfigWSJsonRPC, manager: SharedArtifactManager) -> Result<Self, Error> {
         let mut handlers = Handlers::new();
         handlers.insert("create_artifact_class", create_artifact_class);
@@ -83,7 +83,7 @@ impl WSFrontend {
         while let Some(msg) = incoming.next().await {
             match msg {
                 Ok(Message::Text(msg)) => {
-                    let resp = Self::handle_message(msg, &*handlers, &manager).await;
+                    let resp = Self::handle_message(msg, &handlers, &manager).await;
                     let resp = serde_json::to_string(&resp).unwrap();
                     if let Err(e) = outgoing.send(Message::Text(resp)).await {
                         warn!("Failed to send responce: {:?}", e);
@@ -141,4 +141,4 @@ impl WSFrontend {
     }
 }
 
-impl Frontend for WSFrontend {}
+impl Rpc for WsRpc {}

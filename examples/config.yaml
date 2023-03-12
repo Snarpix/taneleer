@@ -1,4 +1,4 @@
-frontends:
+rpc:
   - type: wsjsonrpc
     address: "::"
     port: 5002

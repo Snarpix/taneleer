@@ -5,9 +5,9 @@ mod backends;
 mod class;
 mod config;
 mod error;
-mod frontends;
 mod manager;
 mod proxies;
+mod rpc;
 mod source;
 mod storage;
 mod tag;
@@ -41,13 +41,13 @@ async fn main() -> Result<()> {
 
     let mng = Arc::new(Mutex::new(ArtifactManager::new(storage, backends)));
 
-    let mut frontends = Vec::with_capacity(config.frontends.len());
-    for f in &config.frontends {
-        frontends.push(frontends::from_config(f, mng.clone()).await?);
+    let mut rpc = Vec::with_capacity(config.rpc.len());
+    for f in &config.rpc {
+        rpc.push(rpc::from_config(f, mng.clone()).await?);
     }
 
     tokio::signal::ctrl_c().await?;
 
-    drop(frontends);
+    drop(rpc);
     Ok(())
 }

@@ -9,6 +9,6 @@ pub struct ConfigWSJsonRPC {
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
-pub enum ConfigFrontend {
+pub enum ConfigRPC {
     WSJsonRPC(ConfigWSJsonRPC),
 }

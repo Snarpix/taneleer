@@ -1,6 +1,6 @@
 pub mod backend;
-pub mod frontend;
 pub mod proxy;
+pub mod rpc;
 pub mod storage;
 
 use std::collections::HashMap;
@@ -9,12 +9,12 @@ use serde_derive::Deserialize;
 
 use crate::error::Result;
 use backend::ConfigBackend;
-use frontend::ConfigFrontend;
+use rpc::ConfigRPC;
 use storage::ConfigStorage;
 
 #[derive(Deserialize)]
 pub struct Config {
-    pub frontends: Vec<ConfigFrontend>,
+    pub rpc: Vec<ConfigRPC>,
     #[serde(with = "serde_with::rust::maps_duplicate_key_is_error")]
     pub backends: HashMap<String, ConfigBackend>,
     pub storage: ConfigStorage,
