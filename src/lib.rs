@@ -3,18 +3,17 @@
 
 pub mod api;
 mod artifact;
-mod backend_pack;
 mod backends;
 mod class;
 mod config;
 mod error;
 mod manager;
-mod proxies;
 mod rpc;
 mod source;
 mod storage;
 mod tag;
 mod usage;
 mod util;
+mod manifest;
 
 pub use rpc::wsjsonrpc::jsonrpc;

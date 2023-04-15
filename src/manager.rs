@@ -1,25 +1,32 @@
+use std::collections::HashMap;
+use std::fs::Metadata;
+use std::path::PathBuf;
 use std::sync::Arc;
-
+use std::result::Result as StdResult;
 use log::warn;
+use tokio::fs::File;
 use tokio::sync::broadcast::{self, Sender as BSender};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::BroadcastStream;
 use url::Url;
 use uuid::Uuid;
 
+use crate::api::Hashsum;
 use crate::artifact::{Artifact, ArtifactData, ArtifactItem, ArtifactItemInfo, ArtifactState};
-use crate::backend_pack::Backends;
-use crate::class::{ArtifactClass, ArtifactClassData};
+use crate::backends::{BackendError, Backend};
+use crate::class::{ArtifactClass, ArtifactClassData, ArtifactType};
 use crate::error::Result;
 use crate::source::Source;
 use crate::storage::Storage;
 use crate::tag::{ArtifactTag, Tag};
 use crate::usage::{ArtifactUsage, Usage};
+use crate::manifest::ManifestInfo;
 
 pub type SharedArtifactManager = Arc<Mutex<ArtifactManager>>;
 #[allow(dead_code)]
 pub type ManagerMessageStream = BroadcastStream<ManagerMessage>;
 
+pub type Backends = HashMap<String, Box<dyn Backend + Send + Sync>>;
 #[derive(Clone, Debug)]
 pub enum ManagerMessage {
     NewClass(String),
@@ -39,6 +46,7 @@ pub enum ManagerError {
     InternalError,
     BackendNotExists,
     ProxyNotExists,
+    BackendError(BackendError)
 }
 
 impl std::fmt::Display for ManagerError {
@@ -48,6 +56,12 @@ impl std::fmt::Display for ManagerError {
 }
 
 impl std::error::Error for ManagerError {}
+
+impl From<BackendError> for ManagerError {
+    fn from(e: BackendError) -> Self {
+        Self::BackendError(e)
+    }
+}
 
 impl ArtifactManager {
     pub fn new(storage: Box<dyn Storage + Send + Sync>, backends: Backends) -> ArtifactManager {
@@ -74,7 +88,7 @@ impl ArtifactManager {
             Ok(()) => (),
             Err(e) => {
                 self.storage.remove_uninit_class(&name).await?;
-                return Err(e);
+                return Err(e.into());
             }
         }
         self.storage.commit_class_init(&name).await?;
@@ -150,21 +164,20 @@ impl ArtifactManager {
         class_name: String,
         sources: Vec<Source>,
         tags: Vec<Tag>,
-        proxy: Option<String>,
     ) -> Result<(Uuid, Url)> {
         let artifact_uuid = Uuid::new_v4();
         let (backend_name, artifact_type) = self
             .storage
             .begin_reserve_artifact(artifact_uuid, &class_name, &sources, &tags)
             .await?;
-        let res = async {
+        let res: Result<_> = async {
             let backend = self
                 .backends
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
-            backend
-                .reserve_artifact(proxy.as_deref(), &class_name, artifact_type, artifact_uuid)
-                .await
+            Ok(backend
+                .reserve_artifact(&class_name, artifact_type, artifact_uuid)
+                .await?)
         }
         .await;
         match res {
@@ -184,9 +197,19 @@ impl ArtifactManager {
                 self.storage
                     .rollback_artifact_reserve(artifact_uuid)
                     .await?;
-                Err(e)
+                Err(e.into())
             }
         }
+    }
+
+    pub async fn check_artifact_reserve(
+        &mut self,
+        artifact_uuid: Uuid,
+    ) -> Result<(String, String, ArtifactType)> {
+        return Ok(self
+            .storage
+            .check_artifact_reserve(artifact_uuid)
+            .await?);
     }
 
     pub async fn commit_artifact_reserve(
@@ -198,14 +221,14 @@ impl ArtifactManager {
             .storage
             .begin_artifact_commit(artifact_uuid, &tags)
             .await?;
-        let res = async {
+        let res: Result<_> = async {
             let backend = self
                 .backends
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
-            backend
+            Ok(backend
                 .commit_artifact(&class_name, artifact_type, artifact_uuid)
-                .await
+                .await?)
         }
         .await;
         match res {
@@ -226,7 +249,7 @@ impl ArtifactManager {
                 self.storage
                     .fail_artifact_commit(artifact_uuid, &format!("{:?}", e))
                     .await?;
-                Err(e)
+                Err(e.into())
             }
         }
     }
@@ -234,14 +257,14 @@ impl ArtifactManager {
     pub async fn abort_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<()> {
         let (class_name, backend_name, artifact_type) =
             self.storage.begin_reserve_abort(artifact_uuid).await?;
-        let res = async {
+        let res: Result<_> = async {
             let backend = self
                 .backends
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
-            backend
+            Ok(backend
                 .abort_reserve(&class_name, artifact_type, artifact_uuid)
-                .await
+                .await?)
         }
         .await;
         match res {
@@ -260,7 +283,7 @@ impl ArtifactManager {
                 self.storage
                     .fail_reserve_abort(artifact_uuid, &format!("{:?}", e))
                     .await?;
-                Err(e)
+                Err(e.into())
             }
         }
     }
@@ -268,18 +291,17 @@ impl ArtifactManager {
     pub async fn use_artifact(
         &mut self,
         artifact_uuid: Uuid,
-        proxy: Option<String>,
     ) -> Result<(Uuid, Url)> {
         let (artifact_usage_uuid, class_name, backend_name, artifact_type) =
             self.storage.use_artifact(artifact_uuid).await?;
-        let res = async {
+        let res: Result<_> = async {
             let backend = self
                 .backends
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
-            backend
-                .get_artifact(proxy.as_deref(), &class_name, artifact_type, artifact_uuid)
-                .await
+            Ok(backend
+                .get_artifact(&class_name, artifact_type, artifact_uuid)
+                .await?)
         }
         .await;
         match res {
@@ -288,7 +310,7 @@ impl ArtifactManager {
                 self.storage
                     .release_artifact_usage(artifact_usage_uuid)
                     .await?;
-                Err(e)
+                Err(e.into())
             }
         }
     }
@@ -311,7 +333,6 @@ impl ArtifactManager {
         class_name: String,
         sources: Vec<Source>,
         tags: Vec<Tag>,
-        proxy: Option<String>,
     ) -> Result<(Uuid, Uuid, Url)> {
         let artifact_uuid = self
             .storage
@@ -322,14 +343,14 @@ impl ArtifactManager {
         if class_name != a_class_name {
             return Err(ManagerError::InternalError.into());
         }
-        let res = async {
+        let res: Result<_> = async {
             let backend = self
                 .backends
                 .get_mut(&backend_name)
                 .ok_or(ManagerError::BackendNotExists)?;
-            backend
-                .get_artifact(proxy.as_deref(), &class_name, artifact_type, artifact_uuid)
-                .await
+            Ok(backend
+                .get_artifact( &class_name, artifact_type, artifact_uuid)
+                .await?)
         }
         .await;
         match res {
@@ -339,8 +360,141 @@ impl ArtifactManager {
                 self.storage
                     .release_artifact_usage(artifact_usage_uuid)
                     .await?;
-                Err(e)
+                Err(e.into())
             }
         }
+    }
+    pub async fn create_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+    ) -> StdResult<Uuid, ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.create_upload(class_name).await.map_err(Into::into);
+    }
+    pub async fn lock_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+        upload_uuid: Uuid,
+    ) -> StdResult<File, ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.lock_upload(class_name, upload_uuid).await.map_err(Into::into);
+    }
+    pub async fn unlock_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+        upload_uuid: Uuid,
+    ) -> StdResult<(), ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.unlock_upload(class_name, upload_uuid).await.map_err(Into::into);
+    }
+    pub async fn commit_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+        upload_uuid: Uuid,
+        hash: Hashsum,
+    ) -> StdResult<(), ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.commit_upload(class_name, upload_uuid, hash).await.map_err(Into::into);
+    }
+    pub async fn commit_manifest_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+        upload_uuid: Uuid,
+        hash: Hashsum,
+    ) -> StdResult<(), ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.commit_manifest_upload(class_name, upload_uuid, hash).await.map_err(Into::into);
+    }
+    pub async fn check_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> StdResult<Metadata, ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.check_upload(class_name, hash).await.map_err(Into::into);
+    }
+    pub async fn get_upload(
+        &mut self,
+        backend_name: &str,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> StdResult<File, ManagerError> {
+        let backend = self
+            .backends
+            .get_mut(backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.get_upload(class_name, hash).await.map_err(Into::into);
+    }
+    pub async fn check_manifest_by_hash(
+        &mut self,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> StdResult<ManifestInfo, ManagerError> {
+        let backend_name = self.storage.get_class_backend(class_name).await.or(Err(ManagerError::BackendNotExists))?;
+        let backend = self
+            .backends
+            .get_mut(&backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.check_manifest_by_hash(class_name, hash).await.map_err(Into::into);
+    }
+    pub async fn check_manifest_by_uuid(
+        &mut self,
+        class_name: &str,
+        uuid: Uuid,
+    ) -> StdResult<ManifestInfo, ManagerError> {
+        let backend_name = self.storage.get_class_backend(class_name).await.or(Err(ManagerError::BackendNotExists))?;
+        let backend = self
+            .backends
+            .get_mut(&backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.check_manifest_by_uuid(&class_name, uuid).await.map_err(Into::into);
+    }
+    pub async fn get_manifest_by_hash(
+        &mut self,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> StdResult<(File, ManifestInfo), ManagerError> {
+        let backend_name = self.storage.get_class_backend(class_name).await.or(Err(ManagerError::BackendNotExists))?;
+        let backend = self
+            .backends
+            .get_mut(&backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.get_manifest_by_hash(class_name, hash).await.map_err(Into::into);
+    }
+    pub async fn get_manifest_by_uuid(
+        &mut self,
+        class_name: &str,
+        uuid: Uuid,
+    ) -> StdResult<(File, ManifestInfo), ManagerError> {
+        let backend_name = self.storage.get_class_backend(class_name).await.or(Err(ManagerError::BackendNotExists))?;
+        let backend = self
+            .backends
+            .get_mut(&backend_name)
+            .ok_or(ManagerError::BackendNotExists)?;
+        return backend.get_manifest_by_uuid(&class_name, uuid).await.map_err(Into::into);
     }
 }

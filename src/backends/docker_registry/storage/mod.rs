@@ -5,7 +5,31 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::{artifact::ArtifactItemInfo, error::Result, source::Sha256};
+use crate::{artifact::ArtifactItemInfo, source::Sha256};
+
+#[derive(Debug)]
+pub enum StorageError {
+    InvalidVersion,
+    LockFailed,
+    CommitFailed,
+    SqlError(sqlx::Error)
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for StorageError {}
+
+impl From<sqlx::Error> for StorageError {
+    fn from(e: sqlx::Error) -> Self {
+        Self::SqlError(e)
+    }
+}
+
+type Result<T> = std::result::Result<T, StorageError>;
 
 #[async_trait]
 pub trait Storage {

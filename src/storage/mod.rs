@@ -25,6 +25,9 @@ pub trait Storage {
     async fn remove_uninit_class(&mut self, name: &str) -> Result<()>;
 
     #[must_use]
+    async fn get_class_backend(&self, class_name: &str) -> Result<String>;
+
+    #[must_use]
     async fn get_classes(&self) -> Result<Vec<String>>;
 
     #[must_use]
@@ -106,6 +109,9 @@ pub trait Storage {
 
     #[must_use]
     async fn fail_artifact_commit(&mut self, artifact_uuid: Uuid, error: &str) -> Result<()>;
+
+    #[must_use]
+    async fn check_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<(String, String, ArtifactType)>;
 
     #[must_use]
     async fn use_artifact(

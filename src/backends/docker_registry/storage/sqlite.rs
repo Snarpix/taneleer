@@ -3,25 +3,9 @@ use log::info;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use uuid::Uuid;
 
-use super::Storage;
+use super::{Storage, Result, StorageError};
 use crate::artifact::ArtifactItemInfo;
-use crate::error::Result;
 use crate::source::{Hashsum, Sha256};
-
-#[derive(Debug)]
-pub enum SqliteError {
-    InvalidVersion,
-    LockFailed,
-    CommitFailed,
-}
-
-impl std::fmt::Display for SqliteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl std::error::Error for SqliteError {}
 
 pub struct SqliteStorage {
     pool: SqlitePool,
@@ -47,7 +31,7 @@ impl SqliteStorage {
             while db_version != CURRENT_DB_VERSION {
                 match db_version {
                     0 => res.migrate_0().await?,
-                    _ => return Err(SqliteError::InvalidVersion.into()),
+                    _ => return Err(StorageError::InvalidVersion.into()),
                 }
                 db_version += 1;
             }
@@ -261,7 +245,7 @@ INSERT INTO artifact_uploads(class_id, uuid, create_time, lock)
                 .execute(&self.pool)
                 .await?;
         if res.rows_affected() != 1 {
-            return Err(SqliteError::LockFailed.into());
+            return Err(StorageError::LockFailed.into());
         }
         Ok(())
     }
@@ -274,7 +258,7 @@ INSERT INTO artifact_uploads(class_id, uuid, create_time, lock)
                 .execute(&self.pool)
                 .await?;
         if res.rows_affected() != 1 {
-            return Err(SqliteError::LockFailed.into());
+            return Err(StorageError::LockFailed.into());
         }
         Ok(())
     }
@@ -286,7 +270,7 @@ INSERT INTO artifact_uploads(class_id, uuid, create_time, lock)
             .execute(&self.pool)
             .await?;
         if res.rows_affected() != 1 {
-            return Err(SqliteError::LockFailed.into());
+            return Err(StorageError::LockFailed.into());
         }
         Ok(())
     }
@@ -306,7 +290,7 @@ INSERT INTO artifact_uploads(class_id, uuid, create_time, lock)
             .execute(&mut t)
             .await?;
         if res.rows_affected() != 1 {
-            return Err(SqliteError::CommitFailed.into());
+            return Err(StorageError::CommitFailed.into());
         }
 
         t.commit().await?;

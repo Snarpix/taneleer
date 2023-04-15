@@ -408,6 +408,16 @@ impl Storage for SqliteStorage {
         )
     }
 
+    async fn get_class_backend(&self, class_name: &str) -> Result<String> {
+        Ok(sqlx::query_scalar(
+            r#"SELECT backend FROM artifact_classes WHERE name = ?1 AND state = ?2;"#,
+        )
+        .bind(class_name)
+        .bind(ArtifactClassState::Init)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     async fn get_artifacts(&self) -> Result<Vec<(String, Uuid, ArtifactState)>> {
         sqlx::query_as::<_, (String, Uuid, ArtifactState)>(r#"SELECT AC.name, A.uuid, A.state FROM artifacts AS A JOIN artifact_classes AS AC ON A.class_id = AC.id;"#)
         .fetch_all(&self.pool)
@@ -948,6 +958,25 @@ VALUES (?1, ?2, ?3, "sha256", ?4);
             return Err(SqliteError::NotFound.into());
         }
         Ok(())
+    }
+
+    async fn check_artifact_reserve(&mut self, artifact_uuid: Uuid) -> Result<(String, String, ArtifactType)> {
+        let (artifact_class_name, backend_name, artifact_type): (
+            String,
+            String,
+            ArtifactType,
+        ) = sqlx::query_as(
+            r#"
+            SELECT AC.name, AC.backend, AC.artifact_type
+                FROM artifacts AS A 
+                JOIN artifact_classes AS AC ON A.class_id = AC.id 
+                WHERE A.uuid = ?1 AND A.state = ?2 AND A.next_state IS NULL;"#,
+        )
+        .bind(artifact_uuid)
+        .bind(ArtifactState::Reserved)
+        .fetch_one(&self.pool)
+        .await?;
+        return Ok((artifact_class_name, backend_name, artifact_type));
     }
 
     async fn use_artifact(

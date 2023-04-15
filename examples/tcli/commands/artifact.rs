@@ -20,8 +20,6 @@ pub enum ArtifactCommands {
     Reserve {
         class_name: String,
         #[clap(long)]
-        proxy: Option<String>,
-        #[clap(long)]
         src: Vec<String>,
         #[clap(long)]
         tag: Vec<String>,
@@ -39,12 +37,9 @@ pub enum ArtifactCommands {
     },
     Use {
         artifact_uuid: String,
-        #[clap(long)]
-        proxy: Option<String>,
     },
     Last {
         class_name: String,
-        proxy: Option<String>,
         #[clap(long)]
         src: Vec<String>,
         #[clap(long)]
@@ -100,19 +95,16 @@ pub fn do_artifact_cmd(conn: &mut Connection, cmd: &ArtifactCommands) {
         }
         ArtifactCommands::Reserve {
             class_name,
-            proxy,
             src,
             tag,
         } => {
             let class_name = class_name.clone();
-            let proxy = proxy.clone();
             let sources = parse_srcs(src);
             let tags = parse_tags(tag);
             let res = conn.reserve_artifact(ReserveArtifact {
                 class_name,
                 sources,
                 tags,
-                proxy,
             });
             println!("{}", res.uuid);
             println!("{}", res.url);
@@ -183,17 +175,14 @@ pub fn do_artifact_cmd(conn: &mut Connection, cmd: &ArtifactCommands) {
         }
         ArtifactCommands::Use {
             artifact_uuid,
-            proxy,
         } => {
             let uuid = uuid::Uuid::parse_str(artifact_uuid).unwrap();
-            let proxy = proxy.clone();
-            let res = conn.use_artifact(UseArtifact { uuid, proxy });
+            let res = conn.use_artifact(UseArtifact { uuid });
             println!("{}", res.uuid);
             println!("{}", res.url);
         }
         ArtifactCommands::Last {
             class_name,
-            proxy,
             src,
             tag,
             no_use,
@@ -201,7 +190,6 @@ pub fn do_artifact_cmd(conn: &mut Connection, cmd: &ArtifactCommands) {
             let class_name = class_name.clone();
             let tags = parse_tags(tag);
             let sources = parse_srcs(src);
-            let proxy = proxy.clone();
             if *no_use {
                 let res = conn.find_last_artifact(FindLastArtifact {
                     class_name,
@@ -214,7 +202,6 @@ pub fn do_artifact_cmd(conn: &mut Connection, cmd: &ArtifactCommands) {
                     class_name,
                     sources,
                     tags,
-                    proxy,
                 });
                 println!("{}", res.usage_uuid);
                 println!("{}", res.artifact_uuid);

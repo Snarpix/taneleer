@@ -1,15 +1,18 @@
+use std::fs::Metadata;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use log::warn;
+use tokio::fs::File;
 use url::Url;
 use uuid::Uuid;
 
-use super::Backend;
+use super::{Backend, Result, BackendError};
 use crate::artifact::ArtifactItemInfo;
 use crate::class::{ArtifactClassData, ArtifactType};
 use crate::config::backend::ConfigFsBackend;
-use crate::error::Result;
+use crate::manifest::ManifestInfo;
 use crate::source::Hashsum;
 use crate::util::hash_file_sha256;
 
@@ -22,7 +25,7 @@ impl FsBackend {
         let root_path = &cfg.root_path;
         let meta = tokio::fs::metadata(root_path).await?;
         if !meta.is_dir() {
-            return Err(FsError::RootIsNotDir.into());
+            return Err(BackendError::RootIsNotDir);
         }
         let mut new_perm = meta.permissions();
         new_perm.set_mode(0o701);
@@ -33,26 +36,12 @@ impl FsBackend {
     }
 }
 
-#[derive(Debug)]
-pub enum FsError {
-    RootIsNotDir,
-    InvalidArtifactType,
-}
-
-impl std::fmt::Display for FsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl std::error::Error for FsError {}
-
 #[async_trait]
 impl Backend for FsBackend {
     async fn create_class(&mut self, name: &str, data: &ArtifactClassData) -> Result<()> {
         match data.art_type {
             ArtifactType::File => (),
-            ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
+            ArtifactType::DockerContainer => return Err(BackendError::InvalidArtifactType.into()),
         }
         let mut dir_path = self.root_path.clone();
         dir_path.push(name);
@@ -104,7 +93,7 @@ impl Backend for FsBackend {
                         }
                     }
                 }
-                ArtifactType::DockerContainer => Err(FsError::InvalidArtifactType.into()),
+                ArtifactType::DockerContainer => Err(BackendError::InvalidArtifactType.into()),
             }
         }
         .await;
@@ -155,7 +144,7 @@ impl Backend for FsBackend {
                     hash: Hashsum::Sha256(file_hash),
                 }])
             }
-            ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
+            ArtifactType::DockerContainer => return Err(BackendError::InvalidArtifactType.into()),
         }
     }
 
@@ -180,7 +169,85 @@ impl Backend for FsBackend {
                     res_path.as_os_str().to_string_lossy()
                 ))?)
             }
-            ArtifactType::DockerContainer => return Err(FsError::InvalidArtifactType.into()),
+            ArtifactType::DockerContainer => return Err(BackendError::InvalidArtifactType.into()),
         }
+    }
+    async fn create_upload(
+        &mut self,
+        class_name: &str,
+    ) -> Result<Uuid> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn lock_upload(
+        &mut self,
+        class_name: &str,
+        upload_uuid: Uuid,
+    ) -> Result<File> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn unlock_upload(
+        &mut self,
+        class_name: &str,
+        upload_uuid: Uuid,
+    ) -> Result<()> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn commit_upload(
+        &mut self,
+        class_name: &str,
+        upload_uuid: Uuid,
+        hash: Hashsum,
+    ) -> Result<()> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn commit_manifest_upload(
+        &mut self,
+        class_name: &str,
+        upload_uuid: Uuid,
+        hash: Hashsum,
+    ) -> Result<()> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn check_upload(
+        &mut self,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> Result<Metadata> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn get_upload(
+        &mut self,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> Result<File> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn check_manifest_by_hash(
+        &mut self,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> Result<ManifestInfo> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn check_manifest_by_uuid(
+        &mut self,
+        class_name: &str,
+        uuid: Uuid,
+    ) -> Result<ManifestInfo> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn get_manifest_by_hash(
+        &mut self,
+        class_name: &str,
+        hash: Hashsum,
+    ) -> Result<(File, ManifestInfo)> {
+        return Err(BackendError::NotImplemented.into());
+    }
+    async fn get_manifest_by_uuid(
+        &mut self,
+        class_name: &str,
+        uuid: Uuid,
+    ) -> Result<(File, ManifestInfo)> {
+        return Err(BackendError::NotImplemented.into());
     }
 }

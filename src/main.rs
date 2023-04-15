@@ -1,27 +1,26 @@
 mod api;
 mod artifact;
-mod backend_pack;
 mod backends;
 mod class;
 mod config;
+mod frontends;
 mod error;
 mod manager;
-mod proxies;
 mod rpc;
 mod source;
 mod storage;
 mod tag;
 mod usage;
+mod manifest;
 mod util;
 
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use backend_pack::Backends;
 use config::Config;
 use error::Result;
-use manager::ArtifactManager;
+use manager::{ArtifactManager, Backends};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,7 +34,7 @@ async fn main() -> Result<()> {
     for (backend_name, backend_config) in &config.backends {
         backends.insert(
             backend_name.clone(),
-            backend_pack::from_config(backend_config).await?,
+            backends::backend_from_config(backend_config).await?,
         );
     }
 
@@ -46,6 +45,10 @@ async fn main() -> Result<()> {
         rpc.push(rpc::from_config(f, mng.clone()).await?);
     }
 
+    let mut frontends = Vec::with_capacity(config.frontends.len());
+    for f in &config.frontends {
+        frontends.push(frontends::from_config(f, mng.clone()).await?);
+    }
     tokio::signal::ctrl_c().await?;
 
     drop(rpc);

@@ -33,7 +33,6 @@ pub struct GetArtifactRes {
 #[derive(Serialize, Deserialize)]
 pub struct ReserveArtifact {
     pub class_name: String,
-    pub proxy: Option<String>,
     pub sources: Vec<Source>,
     pub tags: Vec<Tag>,
 }
@@ -58,7 +57,6 @@ pub struct AbortReserve {
 #[derive(Serialize, Deserialize)]
 pub struct UseArtifact {
     pub uuid: Uuid,
-    pub proxy: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,7 +82,6 @@ pub struct UseLastArtifact {
     pub class_name: String,
     pub sources: Vec<Source>,
     pub tags: Vec<Tag>,
-    pub proxy: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

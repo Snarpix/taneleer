@@ -7,18 +7,17 @@ backends:
   fs_test:
     type: fs
     root_path: storage_root
-    proxies:
-      http: 
-        type: rewrite
-        from: file:///Users/snarpix/Documents/taneleer/storage_root
-        to: http://localhost:3000/storage_root
 
   docker_test:
     type: docker_registry
     root_path: docker_root
+
+frontends:
+  - type: docker_registry
     address: "::"
     hostname: host.docker.internal
     port: 5001
+    default_backend: docker_test
 
 storage:
   type: sqlite

@@ -133,7 +133,6 @@ pub async fn get_artifact(
 pub async fn reserve_artifact(
     ReserveArtifact {
         class_name,
-        proxy,
         sources,
         tags,
     }: ReserveArtifact,
@@ -142,7 +141,7 @@ pub async fn reserve_artifact(
     match manager
         .lock()
         .await
-        .reserve_artifact(class_name, sources, tags, proxy)
+        .reserve_artifact(class_name, sources, tags)
         .await
     {
         Ok((uuid, url)) => RpcResult::Result(
@@ -194,10 +193,10 @@ pub async fn abort_reserve(
 }
 
 pub async fn use_artifact(
-    UseArtifact { uuid, proxy }: UseArtifact,
+    UseArtifact { uuid }: UseArtifact,
     manager: SharedArtifactManager,
 ) -> RpcResult {
-    match manager.lock().await.use_artifact(uuid, proxy).await {
+    match manager.lock().await.use_artifact(uuid).await {
         Ok((uuid, url)) => RpcResult::Result(
             serde_json::to_value(UseArtifactRes {
                 uuid,
@@ -241,14 +240,13 @@ pub async fn use_last_artifact(
         class_name,
         sources,
         tags,
-        proxy,
     }: UseLastArtifact,
     manager: SharedArtifactManager,
 ) -> RpcResult {
     match manager
         .lock()
         .await
-        .use_last_artifact(class_name, sources, tags, proxy)
+        .use_last_artifact(class_name, sources, tags)
         .await
     {
         Ok((usage_uuid, artifact_uuid, url)) => RpcResult::Result(
